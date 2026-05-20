@@ -2,26 +2,7 @@
 echo $@
 function print_usage() {
   cat <<USAGE
-Installs Jenkins and exposes it to the public through port 80 (login and cli are disabled)
-Command
-  $0
-Arguments
-  --jenkins_fqdn|-jf       [Required] : Jenkins FQDN
-  --cluster_name|-cn       [Required] : Jenkins cluster name
-  --cluster_version|-cv    [Required] : Jenkins cluster version
-  --vm_private_ip|-pi                 : The VM private ip used to configure Jenkins URL. If missing, jenkins_fqdn will be used instead
-  --jenkins_release_type|-jrt         : The Jenkins release type (LTS or weekly or verified). By default it's set to LTS
-  --jenkins_version_location|-jvl     : Url used to specify the version of Jenkins.
-  --service_principal_type|-sp        : The type of service principal: MSI or manual.
-  --service_principal_id|-spid        : The service principal ID.
-  --service_principal_secret|-ss      : The service principal secret.
-  --subscription_id|-subid            : The subscription ID of the SP.
-  --tenant_id|-tid                    : The tenant id of the SP.
-  --artifacts_location|-al            : Url used to reference other scripts/artifacts.
-  --sas_token|-st                     : A sas token needed if the artifacts location is private.
-  --cloud_agents|-ca                  : The type of the cloud agents: aci, vm or no.
-  --resource_group|-rg                : the resource group name.
-  --location|-lo                      : the resource group location.
+Installs Jenkins and exposes it to the public through port 80
 USAGE
 }
 
@@ -70,86 +51,28 @@ do
   key="$1"
   shift
   case $key in
-    --jenkins_fqdn|-jf)
-      jenkins_fqdn="$1"
-      shift
-      ;;
-    --cluster_name|-cn)
-      cluster_name="$1"
-      shift
-      ;;
-    --cluster_version|-cv)
-      cluster_version="$1"
-      shift
-      ;;
-    --vm_private_ip|-pi)
-      vm_private_ip="$1"
-      shift
-      ;;
-    --jenkins_release_type|-jrt)
-      jenkins_release_type="$1"
-      shift
-      ;;
-    --jenkins_version_location|-jvl)
-      jenkins_version_location="$1"
-      shift
-      ;;
-    --service_principal_type|-sp)
-      service_principal_type="$1"
-      shift
-      ;;
-    --service_principal_id|-spid)
-      service_principal_id="$1"
-      shift
-      ;;
-    --service_principal_secret|-ss)
-      service_principal_secret="$1"
-      shift
-      ;;
-    --subscription_id|-subid)
-      subscription_id="$1"
-      shift
-      ;;
-    --tenant_id|-tid)
-      tenant_id="$1"
-      shift
-      ;;
-    --artifacts_location|-al)
-      artifacts_location="$1"
-      shift
-      ;;
-    --sas_token|-st)
-      artifacts_location_sas_token="$1"
-      shift
-      ;;
-    --cloud_agents|-ca)
-      cloud_agents="$1"
-      shift
-      ;;
-    --resource_group|-rg)
-      resource_group="$1"
-      shift
-      ;;
-    --location|-lo)
-      location="$1"
-      shift
-      ;;
-    --help|-help|-h)
-      print_usage
-      exit 13
-      ;;
-    *)
-      echo "ERROR: Unknown argument '$key' to script '$0'" 1>&2
-      exit -1
+    --jenkins_fqdn|-jf) jenkins_fqdn="$1"; shift ;;
+    --cluster_name|-cn) cluster_name="$1"; shift ;;
+    --cluster_version|-cv) cluster_version="$1"; shift ;;
+    --vm_private_ip|-pi) vm_private_ip="$1"; shift ;;
+    --jenkins_release_type|-jrt) jenkins_release_type="$1"; shift ;;
+    --jenkins_version_location|-jvl) jenkins_version_location="$1"; shift ;;
+    --service_principal_type|-sp) service_principal_type="$1"; shift ;;
+    --service_principal_id|-spid) service_principal_id="$1"; shift ;;
+    --service_principal_secret|-ss) service_principal_secret="$1"; shift ;;
+    --subscription_id|-subid) subscription_id="$1"; shift ;;
+    --tenant_id|-tid) tenant_id="$1"; shift ;;
+    --artifacts_location|-al) artifacts_location="$1"; shift ;;
+    --sas_token|-st) artifacts_location_sas_token="$1"; shift ;;
+    --cloud_agents|-ca) cloud_agents="$1"; shift ;;
+    --resource_group|-rg) resource_group="$1"; shift ;;
+    --location|-lo) location="$1"; shift ;;
+    --help|-help|-h) print_usage; exit 13 ;;
+    *) echo "ERROR: Unknown argument '$key'" 1>&2; exit -1 ;;
   esac
 done
 
 throw_if_empty --jenkins_fqdn $jenkins_fqdn
-throw_if_empty --jenkins_release_type $jenkins_release_type
-if [[ "$jenkins_release_type" != "LTS" ]] && [[ "$jenkins_release_type" != "weekly" ]] && [[ "$jenkins_release_type" != "verified" ]]; then
-  echo "Parameter jenkins_release_type can only be 'LTS' or 'weekly' or 'verified'! Current value is '$jenkins_release_type'"
-  exit 1
-fi
 
 if [ -z "$vm_private_ip" ]; then
     jenkins_url="http://${jenkins_fqdn}/"
@@ -159,39 +82,8 @@ fi
 
 jenkins_auth_matrix_conf=$(cat <<XMLEOF
 <authorizationStrategy class="hudson.security.ProjectMatrixAuthorizationStrategy">
-    <permission>com.cloudbees.plugins.credentials.CredentialsProvider.Create:authenticated</permission>
-    <permission>com.cloudbees.plugins.credentials.CredentialsProvider.Delete:authenticated</permission>
-    <permission>com.cloudbees.plugins.credentials.CredentialsProvider.ManageDomains:authenticated</permission>
-    <permission>com.cloudbees.plugins.credentials.CredentialsProvider.Update:authenticated</permission>
-    <permission>com.cloudbees.plugins.credentials.CredentialsProvider.View:authenticated</permission>
-    <permission>hudson.model.Computer.Build:authenticated</permission>
-    <permission>hudson.model.Computer.Configure:authenticated</permission>
-    <permission>hudson.model.Computer.Connect:authenticated</permission>
-    <permission>hudson.model.Computer.Create:authenticated</permission>
-    <permission>hudson.model.Computer.Delete:authenticated</permission>
-    <permission>hudson.model.Computer.Disconnect:authenticated</permission>
     <permission>hudson.model.Hudson.Administer:authenticated</permission>
-    <permission>hudson.model.Hudson.ConfigureUpdateCenter:authenticated</permission>
     <permission>hudson.model.Hudson.Read:authenticated</permission>
-    <permission>hudson.model.Hudson.RunScripts:authenticated</permission>
-    <permission>hudson.model.Hudson.UploadPlugins:authenticated</permission>
-    <permission>hudson.model.Item.Build:authenticated</permission>
-    <permission>hudson.model.Item.Cancel:authenticated</permission>
-    <permission>hudson.model.Item.Configure:authenticated</permission>
-    <permission>hudson.model.Item.Create:authenticated</permission>
-    <permission>hudson.model.Item.Delete:authenticated</permission>
-    <permission>hudson.model.Item.Discover:authenticated</permission>
-    <permission>hudson.model.Item.Move:authenticated</permission>
-    <permission>hudson.model.Item.Read:authenticated</permission>
-    <permission>hudson.model.Item.Workspace:authenticated</permission>
-    <permission>hudson.model.Run.Delete:authenticated</permission>
-    <permission>hudson.model.Run.Replay:authenticated</permission>
-    <permission>hudson.model.Run.Update:authenticated</permission>
-    <permission>hudson.model.View.Configure:authenticated</permission>
-    <permission>hudson.model.View.Create:authenticated</permission>
-    <permission>hudson.model.View.Delete:authenticated</permission>
-    <permission>hudson.model.View.Read:authenticated</permission>
-    <permission>hudson.scm.SCM.Tag:authenticated</permission>
     <permission>hudson.model.Hudson.Read:anonymous</permission>
     <permission>hudson.model.Item.Discover:anonymous</permission>
     <permission>hudson.model.Item.Read:anonymous</permission>
@@ -231,26 +123,27 @@ server {
         proxy_redirect      http://localhost:8080 http://${jenkins_fqdn};
         proxy_read_timeout  90;
     }
-    location /cli {
-        rewrite ^ /jenkins-on-azure permanent;
-    }
-    location ~ /login* {
-        rewrite ^ /jenkins-on-azure permanent;
-    }
-    location /jenkins-on-azure {
-      alias ${azure_web_page_location};
-    }
+    location /cli { rewrite ^ /jenkins-on-azure permanent; }
+    location ~ /login* { rewrite ^ /jenkins-on-azure permanent; }
+    location /jenkins-on-azure { alias ${azure_web_page_location}; }
 }
 NGINXEOF
 )
 
 # ============================================================
-# FIX: อัปเดต Jenkins GPG Key ใหม่ (key เก่าหมดอายุแล้ว)
+# STEP 1: Update apt and install prerequisites FIRST
 # ============================================================
-sudo apt-get install -y curl gnupg2
+sudo apt-get update --yes
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  curl wget gnupg apt-transport-https ca-certificates \
+  lsb-release software-properties-common
 
-curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | sudo tee \
-  /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+# ============================================================
+# STEP 2: Setup Jenkins repository with new GPG key (2023)
+# ============================================================
+sudo rm -f /etc/apt/sources.list.d/jenkins.list
+sudo curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key \
+  -o /usr/share/keyrings/jenkins-keyring.asc
 
 if [ "$jenkins_release_type" == "weekly" ]; then
   echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian binary/" \
@@ -259,21 +152,33 @@ else
   echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" \
     | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
 fi
+
 # ============================================================
+# STEP 3: Setup Azure CLI repository (new method, no apt-key)
+# ============================================================
+sudo mkdir -p /etc/apt/keyrings
+curl -sL https://packages.microsoft.com/keys/microsoft.asc | \
+  sudo gpg --dearmor --yes -o /etc/apt/keyrings/microsoft.gpg
 
-sudo add-apt-repository ppa:openjdk-r/ppa --yes
+AZ_DIST=$(lsb_release -cs)
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ ${AZ_DIST} main" \
+  | sudo tee /etc/apt/sources.list.d/azure-cli.list > /dev/null
 
-echo "deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli/ $(lsb_release -cs) main" \
-  | sudo tee /etc/apt/sources.list.d/azure-cli.list
-curl -sL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-
-sudo apt-get install apt-transport-https --yes
+# ============================================================
+# STEP 4: Update apt again with all new repos
+# ============================================================
 sudo apt-get update --yes
 
-#install openjdk8
-sudo apt-get install openjdk-8-jre openjdk-8-jre-headless openjdk-8-jdk --yes
+# ============================================================
+# STEP 5: Install Java 17 (required by modern Jenkins LTS)
+# Try Java 17 first, fall back to Java 11
+# ============================================================
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openjdk-17-jdk-headless 2>/dev/null || \
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openjdk-11-jdk-headless
 
-#install jenkins
+# ============================================================
+# STEP 6: Install Jenkins
+# ============================================================
 if [[ ${jenkins_release_type} == 'verified' ]]; then
   jenkins_version=$(curl --silent "${jenkins_version_location}")
   deb_file=jenkins_${jenkins_version}_all.deb
@@ -282,22 +187,27 @@ if [[ ${jenkins_release_type} == 'verified' ]]; then
     sudo dpkg -i ${deb_file}
     sudo apt-get install -f --yes
   else
-    echo "Failed to download ${deb_file}. The initialization is terminated!"
+    echo "Failed to download ${deb_file}."
     exit -1
   fi
 else
-  sudo apt-get install jenkins --yes
-  sudo apt-get install jenkins --yes
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y jenkins
 fi
 
 retry_until_successful sudo test -f /var/lib/jenkins/secrets/initialAdminPassword
 retry_until_successful run_util_script "scripts/jenkins/run-cli-command.sh" -c "version"
 
+# ============================================================
+# STEP 7: Install plugins
+# ============================================================
 plugins=(azure-vm-agents windows-azure-storage matrix-auth workflow-aggregator azure-app-service azure-acs azure-container-agents)
 for plugin in "${plugins[@]}"; do
   run_util_script "scripts/jenkins/run-cli-command.sh" -c "install-plugin $plugin -deploy"
 done
 
+# ============================================================
+# STEP 8: Configure Jenkins
+# ============================================================
 inter_jenkins_config=$(sed -zr -e"s|<authorizationStrategy.*</authorizationStrategy>|{auth-strategy-token}|" /var/lib/jenkins/config.xml)
 final_jenkins_config=${inter_jenkins_config//'{auth-strategy-token}'/${jenkins_auth_matrix_conf}}
 echo "${final_jenkins_config}" | sudo tee /var/lib/jenkins/config.xml > /dev/null
@@ -314,15 +224,9 @@ echo "${final_jenkins_config}" | sudo tee /var/lib/jenkins/config.xml > /dev/nul
 
 sudo service jenkins restart
 
-msi_cred=$(cat <<XMLEOF
-<com.microsoft.azure.util.AzureMsiCredentials>
-  <scope>GLOBAL</scope>
-  <id>azure_service_principal</id>
-  <description>Local MSI</description>
-  <msiPort>50342</msiPort>
-</com.microsoft.azure.util.AzureMsiCredentials>
-XMLEOF
-)
+# ============================================================
+# STEP 9: Create Service Principal credential
+# ============================================================
 sp_cred=$(cat <<XMLEOF
 <com.microsoft.azure.util.AzureCredentials>
   <scope>GLOBAL</scope>
@@ -345,17 +249,14 @@ XMLEOF
 
 retry_until_successful run_util_script "scripts/jenkins/run-cli-command.sh" -c "version"
 
-if [ "${service_principal_type}" == 'msi' ]; then
-  echo "${msi_cred}" > msi_cred.xml
-  run_util_script "scripts/jenkins/run-cli-command.sh" -c "create-credentials-by-xml system::system::jenkins _" -cif msi_cred.xml
-  rm msi_cred.xml
-else
-  echo "${sp_cred}" > sp_cred.xml
-  run_util_script "scripts/jenkins/run-cli-command.sh" -c "create-credentials-by-xml system::system::jenkins _" -cif sp_cred.xml
-  rm sp_cred.xml
-fi
+echo "${sp_cred}" > sp_cred.xml
+run_util_script "scripts/jenkins/run-cli-command.sh" -c "create-credentials-by-xml system::system::jenkins _" -cif sp_cred.xml
+rm sp_cred.xml
 
-vm_agent_conf=conf=$(cat <<XMLEOF
+# ============================================================
+# STEP 10: Setup VM agents (FIX: removed typo 'conf=')
+# ============================================================
+vm_agent_conf=$(cat <<XMLEOF
 <clouds>
   <com.microsoft.azure.vmagent.AzureVMCloud>
     <name>AzureVMAgents</name>
@@ -366,26 +267,10 @@ vm_agent_conf=conf=$(cat <<XMLEOF
     <existingResourceGroupName>${resource_group}</existingResourceGroupName>
     <vmTemplates>
       <com.microsoft.azure.vmagent.AzureVMAgentTemplate>
-        <templateName>win-agent</templateName>
-        <labels>win</labels>
-        <location>${location}</location>
-        <virtualMachineSize>Standard_D1_v2</virtualMachineSize>
-        <storageAccountNameReferenceType>new</storageAccountNameReferenceType>
-        <diskType>managed</diskType>
-        <storageAccountType>Standard_LRS</storageAccountType>
-        <noOfParallelJobs>1</noOfParallelJobs>
-        <usageMode>NORMAL</usageMode>
-        <shutdownOnIdle>false</shutdownOnIdle>
-        <imageTopLevelType>basic</imageTopLevelType>
-        <builtInImage>Windows Server 2016</builtInImage>
-        <credentialsId>agent_admin_account</credentialsId>
-        <retentionTimeInMin>60</retentionTimeInMin>
-      </com.microsoft.azure.vmagent.AzureVMAgentTemplate>
-      <com.microsoft.azure.vmagent.AzureVMAgentTemplate>
         <templateName>linux-agent</templateName>
         <labels>linux</labels>
         <location>${location}</location>
-        <virtualMachineSize>Standard_D1_v2</virtualMachineSize>
+        <virtualMachineSize>Standard_DS2_v2</virtualMachineSize>
         <storageAccountNameReferenceType>new</storageAccountNameReferenceType>
         <diskType>managed</diskType>
         <storageAccountType>Standard_LRS</storageAccountType>
@@ -393,7 +278,7 @@ vm_agent_conf=conf=$(cat <<XMLEOF
         <usageMode>NORMAL</usageMode>
         <shutdownOnIdle>false</shutdownOnIdle>
         <imageTopLevelType>basic</imageTopLevelType>
-        <builtInImage>Ubuntu 16.04 LTS</builtInImage>
+        <builtInImage>Ubuntu 20.04 LTS</builtInImage>
         <credentialsId>agent_admin_account</credentialsId>
         <retentionTimeInMin>60</retentionTimeInMin>
       </com.microsoft.azure.vmagent.AzureVMAgentTemplate>
@@ -456,7 +341,10 @@ fi
 
 run_util_script "scripts/jenkins/run-cli-command.sh" -c "reload-configuration"
 
-sudo apt-get install nginx --yes
+# ============================================================
+# STEP 11: Install nginx
+# ============================================================
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
 echo "${nginx_reverse_proxy_conf}" | sudo tee /etc/nginx/sites-enabled/default > /dev/null
 sudo sed -i "s|.*server_tokens.*|server_tokens off;|" /etc/nginx/nginx.conf
 
@@ -464,7 +352,8 @@ run_util_script "scripts/jenkins/jenkins-on-azure/install-web-page.sh" -u "${jen
 
 sudo service nginx restart
 
-sudo apt-get install git --yes
-sudo apt-get install azure-cli --yes
+# ============================================================
+# STEP 12: Install common tools
+# ============================================================
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git azure-cli xmlstarlet
 sudo az aks install-cli --client-version ${cluster_version}
-sudo apt-get install xmlstarlet --yes
