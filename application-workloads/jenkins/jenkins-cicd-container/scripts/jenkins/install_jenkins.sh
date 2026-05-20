@@ -1,7 +1,7 @@
 #!/bin/bash
 echo $@
 function print_usage() {
-  cat <<EOF
+  cat <<USAGE
 Installs Jenkins and exposes it to the public through port 80 (login and cli are disabled)
 Command
   $0
@@ -22,7 +22,7 @@ Arguments
   --cloud_agents|-ca                  : The type of the cloud agents: aci, vm or no.
   --resource_group|-rg                : the resource group name.
   --location|-lo                      : the resource group location.
-EOF
+USAGE
 }
 
 function throw_if_empty() {
@@ -152,14 +152,12 @@ if [[ "$jenkins_release_type" != "LTS" ]] && [[ "$jenkins_release_type" != "week
 fi
 
 if [ -z "$vm_private_ip" ]; then
-    #use port 80 for public fqdn
     jenkins_url="http://${jenkins_fqdn}/"
 else
-    #use port 8080 for internal
     jenkins_url="http://${vm_private_ip}:8080/"
 fi
 
-jenkins_auth_matrix_conf=$(cat <<EOF
+jenkins_auth_matrix_conf=$(cat <<XMLEOF
 <authorizationStrategy class="hudson.security.ProjectMatrixAuthorizationStrategy">
     <permission>com.cloudbees.plugins.credentials.CredentialsProvider.Create:authenticated</permission>
     <permission>com.cloudbees.plugins.credentials.CredentialsProvider.Delete:authenticated</permission>
@@ -198,28 +196,28 @@ jenkins_auth_matrix_conf=$(cat <<EOF
     <permission>hudson.model.Item.Discover:anonymous</permission>
     <permission>hudson.model.Item.Read:anonymous</permission>
 </authorizationStrategy>
-EOF
+XMLEOF
 )
 
-jenkins_location_conf=$(cat <<EOF
+jenkins_location_conf=$(cat <<XMLEOF
 <?xml version='1.0' encoding='UTF-8'?>
 <jenkins.model.JenkinsLocationConfiguration>
     <adminAddress>address not configured yet &lt;nobody@nowhere&gt;</adminAddress>
     <jenkinsUrl>${jenkins_url}</jenkinsUrl>
 </jenkins.model.JenkinsLocationConfiguration>
-EOF
+XMLEOF
 )
 
-jenkins_disable_reverse_proxy_warning=$(cat <<EOF
+jenkins_disable_reverse_proxy_warning=$(cat <<XMLEOF
 <disabledAdministrativeMonitors>
     <string>hudson.diagnosis.ReverseProxySetupMonitor</string>
 </disabledAdministrativeMonitors>
-EOF
+XMLEOF
 )
 
 jenkins_agent_port="<slaveAgentPort>5378</slaveAgentPort>"
 
-nginx_reverse_proxy_conf=$(cat <<EOF
+nginx_reverse_proxy_conf=$(cat <<NGINXEOF
 server {
     listen 80;
     server_name ${jenkins_fqdn};
@@ -229,9 +227,6 @@ server {
         proxy_set_header        X-Real-IP \$remote_addr;
         proxy_set_header        X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header        X-Forwarded-Proto \$scheme;
-
-
-        # Fix the "It appears that your reverse proxy set up is broken" error.
         proxy_pass          http://localhost:8080;
         proxy_redirect      http://localhost:8080 http://${jenkins_fqdn};
         proxy_read_timeout  90;
@@ -239,7 +234,6 @@ server {
     location /cli {
         rewrite ^ /jenkins-on-azure permanent;
     }
-
     location ~ /login* {
         rewrite ^ /jenkins-on-azure permanent;
     }
@@ -247,24 +241,33 @@ server {
       alias ${azure_web_page_location};
     }
 }
-EOF
+NGINXEOF
 )
 
-#update apt repositories
-wget -q -O - https://pkg.jenkins.io/debian-stable/jenkins.io.key | sudo apt-key add -
+# ============================================================
+# FIX: อัปเดต Jenkins GPG Key ใหม่ (key เก่าหมดอายุแล้ว)
+# ============================================================
+sudo apt-get install -y curl gnupg2
+
+curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | sudo tee \
+  /usr/share/keyrings/jenkins-keyring.asc > /dev/null
 
 if [ "$jenkins_release_type" == "weekly" ]; then
-  sudo sh -c 'echo deb http://pkg.jenkins.io/debian binary/ > /etc/apt/sources.list.d/jenkins.list'
+  echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian binary/" \
+    | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
 else
-  sudo sh -c 'echo deb http://pkg.jenkins.io/debian-stable binary/ > /etc/apt/sources.list.d/jenkins.list'
+  echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" \
+    | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
 fi
+# ============================================================
 
 sudo add-apt-repository ppa:openjdk-r/ppa --yes
 
-echo "deb [arch=amd64] https://apt-mo.trafficmanager.net/repos/azure-cli/ wheezy main" | sudo tee /etc/apt/sources.list.d/azure-cli.list
-sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 417A0893
-sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys EB3E94ADBE1229CF
-sudo apt-get install apt-transport-https
+echo "deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli/ $(lsb_release -cs) main" \
+  | sudo tee /etc/apt/sources.list.d/azure-cli.list
+curl -sL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+
+sudo apt-get install apt-transport-https --yes
 sudo apt-get update --yes
 
 #install openjdk8
@@ -284,51 +287,43 @@ if [[ ${jenkins_release_type} == 'verified' ]]; then
   fi
 else
   sudo apt-get install jenkins --yes
-  sudo apt-get install jenkins --yes # sometime the first apt-get install jenkins command fails, so we try it twice
+  sudo apt-get install jenkins --yes
 fi
 
 retry_until_successful sudo test -f /var/lib/jenkins/secrets/initialAdminPassword
 retry_until_successful run_util_script "scripts/jenkins/run-cli-command.sh" -c "version"
 
-#We need to install workflow-aggregator so all the options in the auth matrix are valid
 plugins=(azure-vm-agents windows-azure-storage matrix-auth workflow-aggregator azure-app-service azure-acs azure-container-agents)
 for plugin in "${plugins[@]}"; do
   run_util_script "scripts/jenkins/run-cli-command.sh" -c "install-plugin $plugin -deploy"
 done
 
-#allow anonymous read access
 inter_jenkins_config=$(sed -zr -e"s|<authorizationStrategy.*</authorizationStrategy>|{auth-strategy-token}|" /var/lib/jenkins/config.xml)
 final_jenkins_config=${inter_jenkins_config//'{auth-strategy-token}'/${jenkins_auth_matrix_conf}}
 echo "${final_jenkins_config}" | sudo tee /var/lib/jenkins/config.xml > /dev/null
 
-#set up Jenkins URL to private_ip:8080 so JNLP connections can be established
 echo "${jenkins_location_conf}" | sudo tee /var/lib/jenkins/jenkins.model.JenkinsLocationConfiguration.xml > /dev/null
 
-#disable 'It appears that your reverse proxy set up is broken' warning.
-# This is visible when connecting through SSH tunneling
 inter_jenkins_config=$(sed -zr -e"s|<disabledAdministrativeMonitors/>|{disable-reverse-proxy-token}|" /var/lib/jenkins/config.xml)
 final_jenkins_config=${inter_jenkins_config//'{disable-reverse-proxy-token}'/${jenkins_disable_reverse_proxy_warning}}
 echo "${final_jenkins_config}" | sudo tee /var/lib/jenkins/config.xml > /dev/null
 
-#Open a fixed port for JNLP
 inter_jenkins_config=$(sed -zr -e"s|<slaveAgentPort.*</slaveAgentPort>|{slave-agent-port}|" /var/lib/jenkins/config.xml)
 final_jenkins_config=${inter_jenkins_config//'{slave-agent-port}'/${jenkins_agent_port}}
 echo "${final_jenkins_config}" | sudo tee /var/lib/jenkins/config.xml > /dev/null
 
-#restart jenkins
 sudo service jenkins restart
 
-#install the service principal
-msi_cred=$(cat <<EOF
+msi_cred=$(cat <<XMLEOF
 <com.microsoft.azure.util.AzureMsiCredentials>
   <scope>GLOBAL</scope>
   <id>azure_service_principal</id>
   <description>Local MSI</description>
   <msiPort>50342</msiPort>
 </com.microsoft.azure.util.AzureMsiCredentials>
-EOF
+XMLEOF
 )
-sp_cred=$(cat <<EOF
+sp_cred=$(cat <<XMLEOF
 <com.microsoft.azure.util.AzureCredentials>
   <scope>GLOBAL</scope>
   <id>azure_service_principal</id>
@@ -345,7 +340,7 @@ sp_cred=$(cat <<EOF
     <graphEndpoint>https://graph.windows.net/</graphEndpoint>
   </data>
 </com.microsoft.azure.util.AzureCredentials>
-EOF
+XMLEOF
 )
 
 retry_until_successful run_util_script "scripts/jenkins/run-cli-command.sh" -c "version"
@@ -360,8 +355,7 @@ else
   rm sp_cred.xml
 fi
 
-#add cloud agents
-vm_agent_conf=conf=$(cat <<EOF
+vm_agent_conf=conf=$(cat <<XMLEOF
 <clouds>
   <com.microsoft.azure.vmagent.AzureVMCloud>
     <name>AzureVMAgents</name>
@@ -408,10 +402,10 @@ vm_agent_conf=conf=$(cat <<EOF
     <approximateVirtualMachineCount>0</approximateVirtualMachineCount>
   </com.microsoft.azure.vmagent.AzureVMCloud>
 </clouds>
-EOF
+XMLEOF
 )
 
-aci_agent_conf=$(cat <<EOF
+aci_agent_conf=$(cat <<XMLEOF
 <clouds>
   <com.microsoft.jenkins.containeragents.aci.AciCloud>
     <name>AciAgents</name>
@@ -432,11 +426,11 @@ aci_agent_conf=$(cat <<EOF
     </templates>
   </com.microsoft.jenkins.containeragents.aci.AciCloud>
 </clouds>
-EOF
+XMLEOF
 )
 
 agent_admin_password=$(head /dev/urandom | tr -dc A-Z | head -c 4)$(head /dev/urandom | tr -dc a-z | head -c 4)$(head /dev/urandom | tr -dc 0-9 | head -c 4)'!@'
-agent_admin_cred=$(cat <<EOF
+agent_admin_cred=$(cat <<XMLEOF
 <com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl>
   <scope>GLOBAL</scope>
   <id>agent_admin_account</id>
@@ -444,7 +438,7 @@ agent_admin_cred=$(cat <<EOF
   <username>agentadmin</username>
   <password>${agent_admin_password}</password>
 </com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl>
-EOF
+XMLEOF
 )
 
 if [ "${cloud_agents}" == 'vm' ]; then
@@ -462,24 +456,15 @@ fi
 
 run_util_script "scripts/jenkins/run-cli-command.sh" -c "reload-configuration"
 
-
-#install nginx
 sudo apt-get install nginx --yes
-
-#configure nginx
 echo "${nginx_reverse_proxy_conf}" | sudo tee /etc/nginx/sites-enabled/default > /dev/null
-
-#don't show version in headers
 sudo sed -i "s|.*server_tokens.*|server_tokens off;|" /etc/nginx/nginx.conf
 
-#install jenkins-on-azure web page
-run_util_script "scripts/jenkins/jenkins-on-azure/install-web-page.sh" -u "${jenkins_fqdn}"  -l "${azure_web_page_location}" -al "${artifacts_location}" -st "${artifacts_location_sas_token}"
+run_util_script "scripts/jenkins/jenkins-on-azure/install-web-page.sh" -u "${jenkins_fqdn}" -l "${azure_web_page_location}" -al "${artifacts_location}" -st "${artifacts_location_sas_token}"
 
-#restart nginx
 sudo service nginx restart
 
-#install common tools
 sudo apt-get install git --yes
 sudo apt-get install azure-cli --yes
 sudo az aks install-cli --client-version ${cluster_version}
-sudo apt-get install xmlstarlet
+sudo apt-get install xmlstarlet --yes
