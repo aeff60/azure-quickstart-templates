@@ -143,18 +143,21 @@ throw_if_empty --resource_group_name $resource_group_name
 throw_if_empty --cluster_name $cluster_name
 throw_if_empty --mongodb_uri $mongodb_uri
 
-#install jenkins
-run_util_script "scripts/jenkins/install_jenkins.sh" -jf "${jenkins_fqdn}" -cn "${cluster_name}" -cv "${cluster_version}" -spid "${service_principal_id}" -ss "${service_principal_secret}" -subid "${subscription_id}" -tid "${tenant_id}" -al "${artifacts_location}" -st "${artifacts_location_sas_token}"
+# ─── FIX: ส่งเฉพาะ flags ที่ install_jenkins.sh รองรับ ───────────────────────
+# เดิม: -jf -cn -cv -spid -ss -subid -tid -al -st  ← install_jenkins.sh ไม่รู้จัก
+# แก้:  -f (--fqdn) เท่านั้นที่ required, ที่เหลือ optional ตาม script ใหม่
+run_util_script "scripts/jenkins/install_jenkins.sh" \
+  -f "${jenkins_fqdn}"
 
-#install git
+# ─── install git ─────────────────────────────────────────────────────────────
 sudo apt-get install git --yes
 
-#install docker if not already installed
+# ─── install docker if not already installed ─────────────────────────────────
 if !(command -v docker >/dev/null); then
   sudo curl -sSL https://get.docker.com/ | sh
 fi
 
-#make sure jenkins has access to docker cli
+# ─── make sure jenkins has access to docker cli ──────────────────────────────
 sudo gpasswd -a jenkins docker
 skill -KILL -u jenkins
 sudo service jenkins restart
@@ -168,4 +171,20 @@ job_display_name="Hello World Build & Deploy"
 job_description="A pipeline that builds a Docker image, pushed built image to ACR, and deploy configurations to AKS."
 
 echo "Including the pipeline"
-run_util_script "scripts/jenkins/add-docker-build-job.sh" -j "http://localhost:8080/" -ju "admin" -jsn "${job_short_name}" -jdn "${job_display_name}" -jd "${job_description}" -g "${git_url}" -r "${registry}" -ru "${registry_user_name}" -rp "${registry_password}" -rr "$repository" -agn "${resource_group_name}" -acn "${cluster_name}" -mu "${mongodb_uri}" -sps "* * * * *" -al "$artifacts_location" -st "$artifacts_location_sas_token"
+run_util_script "scripts/jenkins/add-docker-build-job.sh" \
+  -j "http://localhost:8080/" \
+  -ju "admin" \
+  -jsn "${job_short_name}" \
+  -jdn "${job_display_name}" \
+  -jd "${job_description}" \
+  -g "${git_url}" \
+  -r "${registry}" \
+  -ru "${registry_user_name}" \
+  -rp "${registry_password}" \
+  -rr "$repository" \
+  -agn "${resource_group_name}" \
+  -acn "${cluster_name}" \
+  -mu "${mongodb_uri}" \
+  -sps "* * * * *" \
+  -al "$artifacts_location" \
+  -st "$artifacts_location_sas_token"
