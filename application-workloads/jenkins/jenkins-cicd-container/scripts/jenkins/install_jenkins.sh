@@ -97,7 +97,10 @@ retry() {
   local -r max=10
   local count=0
   until "$@"; do
-    ((count++))
+    # FIX: use (( ++count )) (pre-increment) instead of (( count++ )) (post-increment)
+    # Under set -e, (( count++ )) when count=0 evaluates (( 0 )) → exit code 1 → set -e
+    # kills the script before any retry happens. (( ++count )) evaluates (( 1 )) → exit code 0.
+    (( ++count ))
     [[ $count -ge $max ]] && die "Command failed after $max attempts: $*"
     warn "Attempt $count/$max failed, retrying in 5 s…"
     sleep 5

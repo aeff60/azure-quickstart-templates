@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Command Line Opts
-GRAFANA_VERSION="8.3.4"
+GRAFANA_VERSION=""
 GRAFANA_PORT="3000"
 
 
@@ -52,11 +52,24 @@ done
 # Install Grafana
 install_grafana()
 {
-    log "Downloading grafana with version ${GRAFANA_VERSION}"
-    local DOWNLOAD_URL="https://dl.grafana.com/enterprise/release/grafana-enterprise_${GRAFANA_VERSION}_amd64.deb"
-    sudo apt-get install -y adduser libfontconfig
-    wget "${DOWNLOAD_URL}"
-    sudo dpkg -i "grafana-enterprise_${GRAFANA_VERSION}_amd64.deb"
+    log "Installing Grafana Enterprise via apt repository"
+    # FIX: Use official Grafana apt repository instead of direct deb download.
+    # This lets apt resolve libfontconfig1 and all other dependencies automatically.
+    # Ubuntu 16.04 (xenial) was EOL; VM image updated to Ubuntu 22.04 (jammy).
+    apt-get update -y
+    apt-get install -y --no-install-recommends apt-transport-https software-properties-common wget gpg
+
+    mkdir -p /usr/share/keyrings
+    wget -q -O /usr/share/keyrings/grafana.key https://apt.grafana.com/gpg.key
+    echo "deb [signed-by=/usr/share/keyrings/grafana.key] https://apt.grafana.com stable main" \
+        | tee /etc/apt/sources.list.d/grafana.list
+
+    apt-get update -y
+    if [[ -n "${GRAFANA_VERSION}" ]]; then
+        apt-get install -y "grafana-enterprise=${GRAFANA_VERSION}"
+    else
+        apt-get install -y grafana-enterprise
+    fi
     systemctl daemon-reload
 }
 

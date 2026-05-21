@@ -92,11 +92,9 @@ function post_json() {
 }
 
 #install azure-cli
-echo "deb [arch=amd64] https://apt-mo.trafficmanager.net/repos/azure-cli/ wheezy main" | sudo tee /etc/apt/sources.list.d/azure-cli.list
-sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 417A0893
-sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys EB3E94ADBE1229CF
-sudo apt-get install apt-transport-https
-sudo apt-get update --yes && sudo apt-get install azure-cli --yes
+# FIX: replaced deprecated apt-mo.trafficmanager.net + apt-key method (Ubuntu 16.04 era)
+# with the official Microsoft installer script that works on Ubuntu 22.04+
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 
 #get vitrual machines
 az login --service-principal -u $CLIENT_ID --password $CLIENT_SECRET --tenant $TENANT_ID
