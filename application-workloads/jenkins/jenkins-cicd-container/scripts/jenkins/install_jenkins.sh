@@ -160,8 +160,11 @@ wait_for_apt_lock
 info "Updating system packages…"
 # FIX: retry apt-get update เผื่อ mirror ตอบช้า
 retry apt-get update
+# FIX: แยก fontconfig ออก เพราะเป็น universe package ที่ index บางครั้งยัง sync
+# ไม่เสร็จทันทีหลัง apt-get update → ต้องใช้ retry ป้องกัน "Unable to locate package"
 apt-get install -y --no-install-recommends \
-  ca-certificates curl gnupg lsb-release apt-transport-https fontconfig
+  ca-certificates curl gnupg lsb-release apt-transport-https
+retry apt-get install -y --no-install-recommends fontconfig
 
 # ── 2. Java ──────────────────────────────────────────────────────────────────
 info "Installing OpenJDK ${JAVA_VERSION}…"
