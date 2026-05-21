@@ -13,6 +13,8 @@
 #   - ไม่ curl | sudo bash โดยตรง (security risk)
 #   - nginx ใช้ modern config + TLS-ready structure
 #   - ไม่ expose initialAdminPassword ผ่าน anonymous read
+#   - FIX: รอ apt lock ก่อน (แก้ปัญหา cloud-init ล็อค apt ตอน VM boot)
+#   - FIX: retry apt-get update (แก้ปัญหา Unable to locate package)
 # =============================================================================
 
 set -euo pipefail
@@ -109,12 +111,55 @@ wait_for_jenkins() {
   info "Jenkins is up."
 }
 
+# ─── FIX: รอ apt lock ──────────────────────────────────────────────────────
+# cloud-init ล็อค apt ระหว่าง VM boot ทำให้ apt-get update ล้มเหลว
+# และทำให้ package อย่าง fontconfig หา repository ไม่เจอ
+wait_for_apt_lock() {
+  info "Waiting for apt locks to be released…"
+  local locks=(
+    /var/lib/dpkg/lock-frontend
+    /var/lib/dpkg/lock
+    /var/cache/apt/archives/lock
+    /var/lib/apt/lists/lock
+  )
+  local waited=0
+  local max_wait=300  # รอสูงสุด 5 นาที
+
+  while true; do
+    local locked=false
+    for lock in "${locks[@]}"; do
+      if fuser "$lock" >/dev/null 2>&1; then
+        locked=true
+        break
+      fi
+    done
+
+    if ! $locked; then
+      info "apt locks released."
+      break
+    fi
+
+    if [[ $waited -ge $max_wait ]]; then
+      warn "Timed out waiting for apt lock after ${max_wait}s. Proceeding anyway…"
+      break
+    fi
+
+    warn "apt is locked (cloud-init still running), waiting 10 s… (${waited}s/${max_wait}s)"
+    sleep 10
+    ((waited += 10))
+  done
+}
+
 # ─── Main installation ───────────────────────────────────────────────────────
 require_root
 
+# ── 0. รอ cloud-init ปล่อย apt lock ก่อน ─────────────────────────────────────
+wait_for_apt_lock
+
 # ── 1. System update ─────────────────────────────────────────────────────────
 info "Updating system packages…"
-apt-get update -qq
+# FIX: retry apt-get update เผื่อ mirror ตอบช้า
+retry apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg lsb-release apt-transport-https fontconfig
 
@@ -135,13 +180,13 @@ else
   JENKINS_KEY_URL="https://pkg.jenkins.io/debian/jenkins.io-2026.key"
 fi
 
-curl -fsSL "${JENKINS_KEY_URL}" \
+retry curl -fsSL "${JENKINS_KEY_URL}" \
   | tee /etc/apt/keyrings/jenkins-keyring.asc > /dev/null
 
 echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] ${JENKINS_REPO_URL} binary/" \
   | tee /etc/apt/sources.list.d/jenkins.list > /dev/null
 
-apt-get update -qq
+retry apt-get update
 
 # ── 4. Install Jenkins ───────────────────────────────────────────────────────
 info "Installing Jenkins…"
@@ -163,13 +208,11 @@ EOF
 # Disable the reverse-proxy setup monitor (we handle it via nginx)
 JENKINS_MAIN_CONFIG="${JENKINS_CONFIG_DIR}/config.xml"
 if [[ -f "$JENKINS_MAIN_CONFIG" ]]; then
-  # Suppress "reverse proxy broken" warning if we are behind nginx
   if $INSTALL_NGINX; then
     sed -i 's|<disabledAdministrativeMonitors/>|<disabledAdministrativeMonitors><string>hudson.diagnosis.ReverseProxySetupMonitor</string></disabledAdministrativeMonitors>|' \
       "$JENKINS_MAIN_CONFIG" 2>/dev/null || true
   fi
 
-  # Fix JNLP agent port
   sed -i 's|<slaveAgentPort>.*</slaveAgentPort>|<slaveAgentPort>50000</slaveAgentPort>|' \
     "$JENKINS_MAIN_CONFIG" 2>/dev/null || true
 fi
@@ -225,7 +268,6 @@ server {
 }
 NGINX
 
-  # Disable nginx version disclosure
   sed -i 's|# server_tokens off;|server_tokens off;|' /etc/nginx/nginx.conf
 
   ln -sf /etc/nginx/sites-available/jenkins /etc/nginx/sites-enabled/jenkins
