@@ -69,19 +69,23 @@
   },
   "resources": [
     {
-      "apiVersion": "2019-06-01",
+      "comments": "FIX: เพิ่ม SKU Standard + เปลี่ยนเป็น Static เพื่อให้ DNS ไม่เปลี่ยนหลัง reboot",
+      "apiVersion": "2022-07-01",
       "type": "Microsoft.Network/publicIPAddresses",
       "name": "[variables('publicIPAddressName')]",
       "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard"
+      },
       "properties": {
-        "publicIPAllocationMethod": "Dynamic",
+        "publicIPAllocationMethod": "Static",
         "dnsSettings": {
           "domainNameLabel": "[parameters('dnsPrefix')]"
         }
       }
     },
     {
-      "apiVersion": "2019-06-01",
+      "apiVersion": "2022-07-01",
       "type": "Microsoft.Network/networkSecurityGroups",
       "name": "[variables('securityGroupName')]",
       "location": "[parameters('location')]",
@@ -119,12 +123,13 @@
       }
     },
     {
-      "apiVersion": "2019-06-01",
+      "apiVersion": "2022-07-01",
       "type": "Microsoft.Network/networkInterfaces",
       "name": "[variables('nicName')]",
       "location": "[parameters('location')]",
       "dependsOn": [
-        "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIPAddressName'))]"
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIPAddressName'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('securityGroupName'))]"
       ],
       "properties": {
         "ipConfigurations": [
@@ -147,7 +152,8 @@
       }
     },
     {
-      "apiVersion": "2017-12-01",
+      "comments": "FIX: apiVersion ใหม่ + เปลี่ยนจาก Ubuntu 18.04 (EOL) เป็น 22.04 LTS",
+      "apiVersion": "2023-03-01",
       "type": "Microsoft.Compute/virtualMachines",
       "name": "[variables('vmName')]",
       "location": "[parameters('location')]",
@@ -166,15 +172,16 @@
         "storageProfile": {
           "imageReference": {
             "publisher": "Canonical",
-            "offer": "UbuntuServer",
-            "sku": "18.04-LTS",
+            "offer": "0001-com-ubuntu-server-jammy",
+            "sku": "22_04-lts-gen2",
             "version": "latest"
           },
           "osDisk": {
             "createOption": "fromImage",
             "managedDisk": {
               "storageAccountType": "Premium_LRS"
-            }
+            },
+            "diskSizeGB": 64
           }
         },
         "networkProfile": {
@@ -187,9 +194,10 @@
       },
       "resources": [
         {
+          "comments": "FIX: apiVersion ใหม่ + commandToExecute เรียก jenkins-acr-aks.sh ด้วย flags ที่ถูกต้อง",
           "type": "extensions",
           "name": "[variables('vmExtensionName')]",
-          "apiVersion": "2017-12-01",
+          "apiVersion": "2023-03-01",
           "location": "[parameters('location')]",
           "dependsOn": [
             "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
@@ -197,7 +205,7 @@
           "properties": {
             "publisher": "Microsoft.Azure.Extensions",
             "type": "CustomScript",
-            "typeHandlerVersion": "2.0",
+            "typeHandlerVersion": "2.1",
             "autoUpgradeMinorVersion": true,
             "settings": {
               "fileUris": [
@@ -205,7 +213,7 @@
               ]
             },
             "protectedSettings": {
-              "commandToExecute": "[concat('./jenkins-acr-aks.sh -jf \"', reference(variables('publicIPAddressName')).dnsSettings.fqdn, '\" -u \"', parameters('linuxAdminUsername') , '\" -g \"', parameters('gitRepository') , '\" -r \"https://', parameters('acrServer'), '\" -ru \"', parameters('acrUsername'), '\" -rp \"', parameters('acrPassword'), '\" -subid \"', subscription().subscriptionId, '\" -tid \"', subscription().tenantId, '\" -spid \"', parameters('spClientId'), '\" -ss \"', parameters('spClientSecret'), '\" -gn \"', parameters('kubernetesResourceGroupName'),  '\" -cn \"', parameters('kubernetesClusterName'), '\" -cv \"', parameters('kubernetesVersion') , '\" -mu \"', parameters('mongoDbURI'), '\" -al \"', parameters('_artifactsLocation'), '\" -st \"', parameters('_artifactsLocationSasToken'), '\"' )]"
+              "commandToExecute": "[concat('bash jenkins-acr-aks.sh -jf \"', reference(variables('publicIPAddressName')).dnsSettings.fqdn, '\" -u \"', parameters('linuxAdminUsername'), '\" -g \"', parameters('gitRepository'), '\" -r \"https://', parameters('acrServer'), '\" -ru \"', parameters('acrUsername'), '\" -rp \"', parameters('acrPassword'), '\" -subid \"', subscription().subscriptionId, '\" -tid \"', subscription().tenantId, '\" -spid \"', parameters('spClientId'), '\" -ss \"', parameters('spClientSecret'), '\" -gn \"', parameters('kubernetesResourceGroupName'), '\" -cn \"', parameters('kubernetesClusterName'), '\" -cv \"', parameters('kubernetesVersion'), '\" -mu \"', parameters('mongoDbURI'), '\" -al \"', parameters('_artifactsLocation'), '\" -st \"', parameters('_artifactsLocationSasToken'), '\"')]"
             }
           }
         }
