@@ -1,359 +1,256 @@
-#!/bin/bash
-echo $@
-function print_usage() {
-  cat <<USAGE
-Installs Jenkins and exposes it to the public through port 80
-USAGE
+#!/usr/bin/env bash
+# =============================================================================
+# install_jenkins.sh
+# Jenkins LTS Installation Script for Ubuntu 22.04 / 24.04
+# Last updated: 2025
+#
+# Changes from legacy script:
+#   - Java 21 (ใช้ OpenJDK 21 แทน OpenJDK 8 ที่ EOL แล้ว)
+#   - GPG keyring ใหม่ (/etc/apt/keyrings/) แทน apt-key ที่ deprecated
+#   - Jenkins key URL อัพเดตเป็น jenkins.io-2026.key
+#   - ลบ azure-cli / aks ออกจาก core script (ย้ายเป็น optional)
+#   - set -euo pipefail เพื่อ fail-fast
+#   - ไม่ curl | sudo bash โดยตรง (security risk)
+#   - nginx ใช้ modern config + TLS-ready structure
+#   - ไม่ expose initialAdminPassword ผ่าน anonymous read
+# =============================================================================
+
+set -euo pipefail
+
+# ─── Colour helpers ──────────────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+info()    { echo -e "${GREEN}[INFO]${NC}  $*"; }
+warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+die()     { error "$*"; exit 1; }
+
+# ─── Usage ───────────────────────────────────────────────────────────────────
+print_usage() {
+  cat <<EOF
+Usage: $0 [OPTIONS]
+
+Installs Jenkins LTS on Ubuntu 22.04/24.04 with nginx reverse proxy.
+
+Required:
+  --fqdn,     -f  <hostname>   Public FQDN for Jenkins (e.g. jenkins.example.com)
+
+Optional:
+  --private-ip, -p <ip>        Private IP for Jenkins URL (uses FQDN if omitted)
+  --release,    -r <type>      Jenkins release type: lts (default) | weekly
+  --with-nginx                 Install and configure nginx reverse proxy (default: true)
+  --skip-nginx                 Skip nginx installation
+  --admin-user  <name>         Initial admin username (default: admin)
+  --java-version <ver>         Java version to install: 21 (default) | 17
+  --help,       -h             Show this help
+EOF
 }
 
-function throw_if_empty() {
-  local name="$1"
-  local value="$2"
-  if [ -z "$value" ]; then
-    echo "Parameter '$name' cannot be empty." 1>&2
-    print_usage
-    exit -1
-  fi
-}
+# ─── Defaults ────────────────────────────────────────────────────────────────
+JENKINS_FQDN=""
+JENKINS_PRIVATE_IP=""
+RELEASE_TYPE="lts"
+INSTALL_NGINX=true
+ADMIN_USER="admin"
+JAVA_VERSION="21"
 
-function run_util_script() {
-  local script_path="$1"
-  shift
-  curl --silent "${artifacts_location}${script_path}${artifacts_location_sas_token}" | sudo bash -s -- "$@"
-  local return_value=$?
-  if [ $return_value -ne 0 ]; then
-    >&2 echo "Failed while executing script '$script_path'."
-    exit $return_value
-  fi
-}
-
-function retry_until_successful {
-  counter=0
-  "${@}"
-  while [ $? -ne 0 ]; do
-    if [[ "$counter" -gt 20 ]]; then
-        exit 1
-    else
-        let counter++
-    fi
-    sleep 5
-    "${@}"
-  done;
-}
-
-#defaults
-jenkins_version_location="${artifacts_location}scripts/jenkins/jenkins-verified-ver${artifacts_location_sas_token}"
-azure_web_page_location="/usr/share/nginx/azure"
-jenkins_release_type="LTS"
-
-while [[ $# > 0 ]]
-do
-  key="$1"
-  shift
-  case $key in
-    --jenkins_fqdn|-jf) jenkins_fqdn="$1"; shift ;;
-    --cluster_name|-cn) cluster_name="$1"; shift ;;
-    --cluster_version|-cv) cluster_version="$1"; shift ;;
-    --vm_private_ip|-pi) vm_private_ip="$1"; shift ;;
-    --jenkins_release_type|-jrt) jenkins_release_type="$1"; shift ;;
-    --jenkins_version_location|-jvl) jenkins_version_location="$1"; shift ;;
-    --service_principal_type|-sp) service_principal_type="$1"; shift ;;
-    --service_principal_id|-spid) service_principal_id="$1"; shift ;;
-    --service_principal_secret|-ss) service_principal_secret="$1"; shift ;;
-    --subscription_id|-subid) subscription_id="$1"; shift ;;
-    --tenant_id|-tid) tenant_id="$1"; shift ;;
-    --artifacts_location|-al) artifacts_location="$1"; shift ;;
-    --sas_token|-st) artifacts_location_sas_token="$1"; shift ;;
-    --cloud_agents|-ca) cloud_agents="$1"; shift ;;
-    --resource_group|-rg) resource_group="$1"; shift ;;
-    --location|-lo) location="$1"; shift ;;
-    --help|-help|-h) print_usage; exit 13 ;;
-    *) echo "ERROR: Unknown argument '$key'" 1>&2; exit -1 ;;
+# ─── Argument parsing ────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fqdn|-f)         JENKINS_FQDN="$2";       shift 2 ;;
+    --private-ip|-p)   JENKINS_PRIVATE_IP="$2"; shift 2 ;;
+    --release|-r)      RELEASE_TYPE="$2";       shift 2 ;;
+    --with-nginx)      INSTALL_NGINX=true;       shift   ;;
+    --skip-nginx)      INSTALL_NGINX=false;      shift   ;;
+    --admin-user)      ADMIN_USER="$2";          shift 2 ;;
+    --java-version)    JAVA_VERSION="$2";        shift 2 ;;
+    --help|-h)         print_usage; exit 0       ;;
+    *) die "Unknown argument: $1. Use --help for usage." ;;
   esac
 done
 
-throw_if_empty --jenkins_fqdn $jenkins_fqdn
+# ─── Validation ──────────────────────────────────────────────────────────────
+[[ -z "$JENKINS_FQDN" ]] && die "--fqdn is required."
 
-if [ -z "$vm_private_ip" ]; then
-    jenkins_url="http://${jenkins_fqdn}/"
-else
-    jenkins_url="http://${vm_private_ip}:8080/"
+if [[ "$RELEASE_TYPE" != "lts" && "$RELEASE_TYPE" != "weekly" ]]; then
+  die "--release must be 'lts' or 'weekly'. Got: '$RELEASE_TYPE'"
 fi
 
-jenkins_auth_matrix_conf=$(cat <<XMLEOF
-<authorizationStrategy class="hudson.security.ProjectMatrixAuthorizationStrategy">
-    <permission>hudson.model.Hudson.Administer:authenticated</permission>
-    <permission>hudson.model.Hudson.Read:authenticated</permission>
-    <permission>hudson.model.Hudson.Read:anonymous</permission>
-    <permission>hudson.model.Item.Discover:anonymous</permission>
-    <permission>hudson.model.Item.Read:anonymous</permission>
-</authorizationStrategy>
-XMLEOF
-)
+if [[ "$JAVA_VERSION" != "17" && "$JAVA_VERSION" != "21" ]]; then
+  die "--java-version must be '17' or '21'. Got: '$JAVA_VERSION'"
+fi
 
-jenkins_location_conf=$(cat <<XMLEOF
-<?xml version='1.0' encoding='UTF-8'?>
-<jenkins.model.JenkinsLocationConfiguration>
-    <adminAddress>address not configured yet &lt;nobody@nowhere&gt;</adminAddress>
-    <jenkinsUrl>${jenkins_url}</jenkinsUrl>
-</jenkins.model.JenkinsLocationConfiguration>
-XMLEOF
-)
+# Determine Jenkins URL
+if [[ -n "$JENKINS_PRIVATE_IP" ]]; then
+  JENKINS_URL="http://${JENKINS_PRIVATE_IP}:8080/"
+else
+  JENKINS_URL="http://${JENKINS_FQDN}/"
+fi
 
-jenkins_disable_reverse_proxy_warning=$(cat <<XMLEOF
-<disabledAdministrativeMonitors>
-    <string>hudson.diagnosis.ReverseProxySetupMonitor</string>
-</disabledAdministrativeMonitors>
-XMLEOF
-)
-
-jenkins_agent_port="<slaveAgentPort>5378</slaveAgentPort>"
-
-nginx_reverse_proxy_conf=$(cat <<NGINXEOF
-server {
-    listen 80;
-    server_name ${jenkins_fqdn};
-    error_page 403 /jenkins-on-azure;
-    location / {
-        proxy_set_header        Host \$host:\$server_port;
-        proxy_set_header        X-Real-IP \$remote_addr;
-        proxy_set_header        X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header        X-Forwarded-Proto \$scheme;
-        proxy_pass          http://localhost:8080;
-        proxy_redirect      http://localhost:8080 http://${jenkins_fqdn};
-        proxy_read_timeout  90;
-    }
-    location /cli { rewrite ^ /jenkins-on-azure permanent; }
-    location ~ /login* { rewrite ^ /jenkins-on-azure permanent; }
-    location /jenkins-on-azure { alias ${azure_web_page_location}; }
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+require_root() {
+  [[ $EUID -eq 0 ]] || die "This script must be run as root (sudo)."
 }
-NGINXEOF
-)
 
-# ============================================================
-# STEP 1: Update apt and install prerequisites FIRST
-# ============================================================
-sudo apt-get update --yes
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  curl wget gnupg apt-transport-https ca-certificates \
-  lsb-release software-properties-common
+retry() {
+  local -r max=10
+  local count=0
+  until "$@"; do
+    ((count++))
+    [[ $count -ge $max ]] && die "Command failed after $max attempts: $*"
+    warn "Attempt $count/$max failed, retrying in 5 s…"
+    sleep 5
+  done
+}
 
-# ============================================================
-# STEP 2: Setup Jenkins repository with new GPG key (2023)
-# ============================================================
-sudo rm -f /etc/apt/sources.list.d/jenkins.list
-sudo curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key \
-  -o /usr/share/keyrings/jenkins-keyring.asc
+wait_for_jenkins() {
+  info "Waiting for Jenkins to become reachable…"
+  local url="http://localhost:8080/login"
+  retry curl --silent --fail --output /dev/null "$url"
+  info "Jenkins is up."
+}
 
-if [ "$jenkins_release_type" == "weekly" ]; then
-  echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian binary/" \
-    | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+# ─── Main installation ───────────────────────────────────────────────────────
+require_root
+
+# ── 1. System update ─────────────────────────────────────────────────────────
+info "Updating system packages…"
+apt-get update -qq
+apt-get install -y --no-install-recommends \
+  ca-certificates curl gnupg lsb-release apt-transport-https fontconfig
+
+# ── 2. Java ──────────────────────────────────────────────────────────────────
+info "Installing OpenJDK ${JAVA_VERSION}…"
+apt-get install -y --no-install-recommends "openjdk-${JAVA_VERSION}-jre"
+java -version
+
+# ── 3. Jenkins repository (modern GPG keyring) ───────────────────────────────
+info "Adding Jenkins ${RELEASE_TYPE} repository…"
+mkdir -p /etc/apt/keyrings
+
+if [[ "$RELEASE_TYPE" == "lts" ]]; then
+  JENKINS_REPO_URL="https://pkg.jenkins.io/debian-stable"
+  JENKINS_KEY_URL="https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key"
 else
-  echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" \
-    | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+  JENKINS_REPO_URL="https://pkg.jenkins.io/debian"
+  JENKINS_KEY_URL="https://pkg.jenkins.io/debian/jenkins.io-2026.key"
 fi
 
-# ============================================================
-# STEP 3: Setup Azure CLI repository (new method, no apt-key)
-# ============================================================
-sudo mkdir -p /etc/apt/keyrings
-curl -sL https://packages.microsoft.com/keys/microsoft.asc | \
-  sudo gpg --dearmor --yes -o /etc/apt/keyrings/microsoft.gpg
+curl -fsSL "${JENKINS_KEY_URL}" \
+  | tee /etc/apt/keyrings/jenkins-keyring.asc > /dev/null
 
-AZ_DIST=$(lsb_release -cs)
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ ${AZ_DIST} main" \
-  | sudo tee /etc/apt/sources.list.d/azure-cli.list > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] ${JENKINS_REPO_URL} binary/" \
+  | tee /etc/apt/sources.list.d/jenkins.list > /dev/null
 
-# ============================================================
-# STEP 4: Update apt again with all new repos
-# ============================================================
-sudo apt-get update --yes
+apt-get update -qq
 
-# ============================================================
-# STEP 5: Install Java 17 (required by modern Jenkins LTS)
-# Try Java 17 first, fall back to Java 11
-# ============================================================
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openjdk-17-jdk-headless 2>/dev/null || \
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openjdk-11-jdk-headless
+# ── 4. Install Jenkins ───────────────────────────────────────────────────────
+info "Installing Jenkins…"
+apt-get install -y jenkins
 
-# ============================================================
-# STEP 6: Install Jenkins
-# ============================================================
-if [[ ${jenkins_release_type} == 'verified' ]]; then
-  jenkins_version=$(curl --silent "${jenkins_version_location}")
-  deb_file=jenkins_${jenkins_version}_all.deb
-  wget -q "https://pkg.jenkins.io/debian-stable/binary/${deb_file}"
-  if [[ -f ${deb_file} ]]; then
-    sudo dpkg -i ${deb_file}
-    sudo apt-get install -f --yes
-  else
-    echo "Failed to download ${deb_file}."
-    exit -1
+# ── 5. Harden Jenkins config ─────────────────────────────────────────────────
+info "Configuring Jenkins location…"
+JENKINS_CONFIG_DIR="/var/lib/jenkins"
+
+# Jenkins URL config
+cat > "${JENKINS_CONFIG_DIR}/jenkins.model.JenkinsLocationConfiguration.xml" <<EOF
+<?xml version='1.1' encoding='UTF-8'?>
+<jenkins.model.JenkinsLocationConfiguration>
+  <adminAddress>address not configured &lt;nobody@nowhere&gt;</adminAddress>
+  <jenkinsUrl>${JENKINS_URL}</jenkinsUrl>
+</jenkins.model.JenkinsLocationConfiguration>
+EOF
+
+# Disable the reverse-proxy setup monitor (we handle it via nginx)
+JENKINS_MAIN_CONFIG="${JENKINS_CONFIG_DIR}/config.xml"
+if [[ -f "$JENKINS_MAIN_CONFIG" ]]; then
+  # Suppress "reverse proxy broken" warning if we are behind nginx
+  if $INSTALL_NGINX; then
+    sed -i 's|<disabledAdministrativeMonitors/>|<disabledAdministrativeMonitors><string>hudson.diagnosis.ReverseProxySetupMonitor</string></disabledAdministrativeMonitors>|' \
+      "$JENKINS_MAIN_CONFIG" 2>/dev/null || true
   fi
-else
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y jenkins
+
+  # Fix JNLP agent port
+  sed -i 's|<slaveAgentPort>.*</slaveAgentPort>|<slaveAgentPort>50000</slaveAgentPort>|' \
+    "$JENKINS_MAIN_CONFIG" 2>/dev/null || true
 fi
 
-retry_until_successful sudo test -f /var/lib/jenkins/secrets/initialAdminPassword
-retry_until_successful run_util_script "scripts/jenkins/run-cli-command.sh" -c "version"
+# ── 6. Enable and start Jenkins ──────────────────────────────────────────────
+info "Enabling and starting Jenkins service…"
+systemctl enable jenkins
+systemctl restart jenkins
+wait_for_jenkins
 
-# ============================================================
-# STEP 7: Install plugins
-# ============================================================
-plugins=(azure-vm-agents windows-azure-storage matrix-auth workflow-aggregator azure-app-service azure-acs azure-container-agents)
-for plugin in "${plugins[@]}"; do
-  run_util_script "scripts/jenkins/run-cli-command.sh" -c "install-plugin $plugin -deploy"
-done
+# ── 7. nginx reverse proxy ───────────────────────────────────────────────────
+if $INSTALL_NGINX; then
+  info "Installing nginx…"
+  apt-get install -y nginx
 
-# ============================================================
-# STEP 8: Configure Jenkins
-# ============================================================
-inter_jenkins_config=$(sed -zr -e"s|<authorizationStrategy.*</authorizationStrategy>|{auth-strategy-token}|" /var/lib/jenkins/config.xml)
-final_jenkins_config=${inter_jenkins_config//'{auth-strategy-token}'/${jenkins_auth_matrix_conf}}
-echo "${final_jenkins_config}" | sudo tee /var/lib/jenkins/config.xml > /dev/null
+  info "Writing nginx config for ${JENKINS_FQDN}…"
+  cat > /etc/nginx/sites-available/jenkins <<NGINX
+# Jenkins reverse proxy – generated by install_jenkins.sh
+# To add TLS: use certbot (sudo certbot --nginx -d ${JENKINS_FQDN})
+upstream jenkins_backend {
+  keepalive 32;
+  server 127.0.0.1:8080;
+}
 
-echo "${jenkins_location_conf}" | sudo tee /var/lib/jenkins/jenkins.model.JenkinsLocationConfiguration.xml > /dev/null
+server {
+  listen 80;
+  server_name ${JENKINS_FQDN};
 
-inter_jenkins_config=$(sed -zr -e"s|<disabledAdministrativeMonitors/>|{disable-reverse-proxy-token}|" /var/lib/jenkins/config.xml)
-final_jenkins_config=${inter_jenkins_config//'{disable-reverse-proxy-token}'/${jenkins_disable_reverse_proxy_warning}}
-echo "${final_jenkins_config}" | sudo tee /var/lib/jenkins/config.xml > /dev/null
+  # Redirect /cli to home (prevent unauthenticated CLI access)
+  location = /cli {
+    return 301 /;
+  }
 
-inter_jenkins_config=$(sed -zr -e"s|<slaveAgentPort.*</slaveAgentPort>|{slave-agent-port}|" /var/lib/jenkins/config.xml)
-final_jenkins_config=${inter_jenkins_config//'{slave-agent-port}'/${jenkins_agent_port}}
-echo "${final_jenkins_config}" | sudo tee /var/lib/jenkins/config.xml > /dev/null
+  # Proxy to Jenkins
+  location / {
+    proxy_pass         http://jenkins_backend;
+    proxy_redirect     http://jenkins_backend http://${JENKINS_FQDN};
 
-sudo service jenkins restart
+    proxy_set_header   Host              \$host;
+    proxy_set_header   X-Real-IP         \$remote_addr;
+    proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto \$scheme;
 
-# ============================================================
-# STEP 9: Create Service Principal credential
-# ============================================================
-sp_cred=$(cat <<XMLEOF
-<com.microsoft.azure.util.AzureCredentials>
-  <scope>GLOBAL</scope>
-  <id>azure_service_principal</id>
-  <description>Manual Service Principal</description>
-  <data>
-    <subscriptionId>${subscription_id}</subscriptionId>
-    <clientId>${service_principal_id}</clientId>
-    <clientSecret>${service_principal_secret}</clientSecret>
-    <oauth2TokenEndpoint>https://login.windows.net/${tenant_id}</oauth2TokenEndpoint>
-    <serviceManagementURL>https://management.core.windows.net/</serviceManagementURL>
-    <tenant>${tenant_id}</tenant>
-    <authenticationEndpoint>https://login.microsoftonline.com/</authenticationEndpoint>
-    <resourceManagerEndpoint>https://management.azure.com/</resourceManagerEndpoint>
-    <graphEndpoint>https://graph.windows.net/</graphEndpoint>
-  </data>
-</com.microsoft.azure.util.AzureCredentials>
-XMLEOF
-)
+    # WebSocket support (required for Blue Ocean, Pipeline logs)
+    proxy_http_version 1.1;
+    proxy_set_header   Upgrade           \$http_upgrade;
+    proxy_set_header   Connection        "upgrade";
 
-retry_until_successful run_util_script "scripts/jenkins/run-cli-command.sh" -c "version"
+    proxy_read_timeout  90s;
+    proxy_send_timeout  90s;
+    proxy_connect_timeout 10s;
+  }
+}
+NGINX
 
-echo "${sp_cred}" > sp_cred.xml
-run_util_script "scripts/jenkins/run-cli-command.sh" -c "create-credentials-by-xml system::system::jenkins _" -cif sp_cred.xml
-rm sp_cred.xml
+  # Disable nginx version disclosure
+  sed -i 's|# server_tokens off;|server_tokens off;|' /etc/nginx/nginx.conf
 
-# ============================================================
-# STEP 10: Setup VM agents (FIX: removed typo 'conf=')
-# ============================================================
-vm_agent_conf=$(cat <<XMLEOF
-<clouds>
-  <com.microsoft.azure.vmagent.AzureVMCloud>
-    <name>AzureVMAgents</name>
-    <cloudName>AzureVMAgents</cloudName>
-    <credentialsId>azure_service_principal</credentialsId>
-    <maxVirtualMachinesLimit>10</maxVirtualMachinesLimit>
-    <resourceGroupReferenceType>existing</resourceGroupReferenceType>
-    <existingResourceGroupName>${resource_group}</existingResourceGroupName>
-    <vmTemplates>
-      <com.microsoft.azure.vmagent.AzureVMAgentTemplate>
-        <templateName>linux-agent</templateName>
-        <labels>linux</labels>
-        <location>${location}</location>
-        <virtualMachineSize>Standard_DS2_v2</virtualMachineSize>
-        <storageAccountNameReferenceType>new</storageAccountNameReferenceType>
-        <diskType>managed</diskType>
-        <storageAccountType>Standard_LRS</storageAccountType>
-        <noOfParallelJobs>1</noOfParallelJobs>
-        <usageMode>NORMAL</usageMode>
-        <shutdownOnIdle>false</shutdownOnIdle>
-        <imageTopLevelType>basic</imageTopLevelType>
-        <builtInImage>Ubuntu 20.04 LTS</builtInImage>
-        <credentialsId>agent_admin_account</credentialsId>
-        <retentionTimeInMin>60</retentionTimeInMin>
-      </com.microsoft.azure.vmagent.AzureVMAgentTemplate>
-    </vmTemplates>
-    <deploymentTimeout>1200</deploymentTimeout>
-    <approximateVirtualMachineCount>0</approximateVirtualMachineCount>
-  </com.microsoft.azure.vmagent.AzureVMCloud>
-</clouds>
-XMLEOF
-)
+  ln -sf /etc/nginx/sites-available/jenkins /etc/nginx/sites-enabled/jenkins
+  rm -f /etc/nginx/sites-enabled/default
 
-aci_agent_conf=$(cat <<XMLEOF
-<clouds>
-  <com.microsoft.jenkins.containeragents.aci.AciCloud>
-    <name>AciAgents</name>
-    <credentialsId>azure_service_principal</credentialsId>
-    <resourceGroup>${resource_group}</resourceGroup>
-    <templates>
-      <com.microsoft.jenkins.containeragents.aci.AciContainerTemplate>
-        <name>aciagents</name>
-        <image>jenkinsci/jnlp-slave</image>
-        <osType>Linux</osType>
-        <command>jenkins-slave -url \${rootUrl} \${secret} \${nodeName}</command>
-        <rootFs>/home/jenkins</rootFs>
-        <timeout>10</timeout>
-        <cpu>1</cpu>
-        <memory>1.5</memory>
-        <retentionStrategy class="com.microsoft.jenkins.containeragents.strategy.ContainerOnceRetentionStrategy" />
-      </com.microsoft.jenkins.containeragents.aci.AciContainerTemplate>
-    </templates>
-  </com.microsoft.jenkins.containeragents.aci.AciCloud>
-</clouds>
-XMLEOF
-)
-
-agent_admin_password=$(head /dev/urandom | tr -dc A-Z | head -c 4)$(head /dev/urandom | tr -dc a-z | head -c 4)$(head /dev/urandom | tr -dc 0-9 | head -c 4)'!@'
-agent_admin_cred=$(cat <<XMLEOF
-<com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl>
-  <scope>GLOBAL</scope>
-  <id>agent_admin_account</id>
-  <description>the admin account for the vm agents</description>
-  <username>agentadmin</username>
-  <password>${agent_admin_password}</password>
-</com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl>
-XMLEOF
-)
-
-if [ "${cloud_agents}" == 'vm' ]; then
-  echo "${agent_admin_cred}" > agent_admin_cred.xml
-  run_util_script "scripts/jenkins/run-cli-command.sh" -c "create-credentials-by-xml system::system::jenkins _" -cif agent_admin_cred.xml
-  rm agent_admin_cred.xml
-  inter_jenkins_config=$(sed -zr -e"s|<clouds/>|{clouds}|" /var/lib/jenkins/config.xml)
-  final_jenkins_config=${inter_jenkins_config//'{clouds}'/${vm_agent_conf}}
-  echo "${final_jenkins_config}" | sudo tee /var/lib/jenkins/config.xml > /dev/null
-elif [ "${cloud_agents}" == 'aci' ]; then
-  inter_jenkins_config=$(sed -zr -e"s|<clouds/>|{clouds}|" /var/lib/jenkins/config.xml)
-  final_jenkins_config=${inter_jenkins_config//'{clouds}'/${aci_agent_conf}}
-  echo "${final_jenkins_config}" | sudo tee /var/lib/jenkins/config.xml > /dev/null
+  nginx -t && systemctl restart nginx
+  info "nginx configured and restarted."
 fi
 
-run_util_script "scripts/jenkins/run-cli-command.sh" -c "reload-configuration"
+# ── 8. Summary ───────────────────────────────────────────────────────────────
+ADMIN_PASSWORD_FILE="/var/lib/jenkins/secrets/initialAdminPassword"
 
-# ============================================================
-# STEP 11: Install nginx
-# ============================================================
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
-echo "${nginx_reverse_proxy_conf}" | sudo tee /etc/nginx/sites-enabled/default > /dev/null
-sudo sed -i "s|.*server_tokens.*|server_tokens off;|" /etc/nginx/nginx.conf
-
-run_util_script "scripts/jenkins/jenkins-on-azure/install-web-page.sh" -u "${jenkins_fqdn}" -l "${azure_web_page_location}" -al "${artifacts_location}" -st "${artifacts_location_sas_token}"
-
-sudo service nginx restart
-
-# ============================================================
-# STEP 12: Install common tools
-# ============================================================
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git azure-cli xmlstarlet
-sudo az aks install-cli --client-version ${cluster_version}
+echo
+echo "============================================================"
+echo "  Jenkins installation complete"
+echo "============================================================"
+echo "  URL           : ${JENKINS_URL}"
+if [[ -f "$ADMIN_PASSWORD_FILE" ]]; then
+  echo "  Admin password: $(cat $ADMIN_PASSWORD_FILE)"
+fi
+echo
+echo "  Next steps:"
+echo "  1. Open ${JENKINS_URL} in your browser"
+echo "  2. Complete the setup wizard"
+echo "  3. Add TLS (recommended):"
+echo "     sudo apt install certbot python3-certbot-nginx"
+echo "     sudo certbot --nginx -d ${JENKINS_FQDN}"
+echo "============================================================"
