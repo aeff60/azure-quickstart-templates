@@ -37,7 +37,15 @@ function throw_if_empty() {
 function run_util_script() {
   local script_path="$1"
   shift
-  curl --silent "${artifacts_location}${script_path}${artifacts_location_sas_token}" | sudo bash -s -- "$@"
+  # FIX: ใช้ไฟล์ที่ CustomScript download ไว้แล้วใน working dir ก่อน
+  # เพื่อให้ fix ที่อยู่ใน local scripts ถูก deploy จริง ไม่ถูก override ด้วย version เก่าจาก GitHub
+  local script_name
+  script_name="$(basename "$script_path")"
+  if [[ -f "$script_name" ]]; then
+    sudo bash "$script_name" "$@"
+  else
+    curl --silent "${artifacts_location}${script_path}${artifacts_location_sas_token}" | sudo bash -s -- "$@"
+  fi
   local return_value=$?
   if [ $return_value -ne 0 ]; then
     >&2 echo "Failed while executing script '$script_path'."
@@ -159,7 +167,8 @@ fi
 
 # ─── make sure jenkins has access to docker cli ──────────────────────────────
 sudo gpasswd -a jenkins docker
-skill -KILL -u jenkins
+# FIX: skill ไม่มีบน Ubuntu 22.04+ → ใช้ pkill แทน
+pkill -KILL -u jenkins 2>/dev/null || true
 sudo service jenkins restart
 
 if [ -z "$repository" ]; then
@@ -171,8 +180,10 @@ job_display_name="Hello World Build & Deploy"
 job_description="A pipeline that builds a Docker image, pushed built image to ACR, and deploy configurations to AKS."
 
 echo "Including the pipeline"
+# FIX: ใช้ FQDN URL แทน localhost เพื่อให้ Jenkins CLI WebSocket Origin ตรงกับ Jenkins URL ที่ configure ไว้
+# ถ้า CLI connect ด้วย localhost:8080 แต่ Jenkins URL = http://FQDN/ → Origin ไม่ตรง → 403
 run_util_script "scripts/jenkins/add-docker-build-job.sh" \
-  -j "http://localhost:8080/" \
+  -j "http://${jenkins_fqdn}/" \
   -ju "admin" \
   -jsn "${job_short_name}" \
   -jdn "${job_display_name}" \

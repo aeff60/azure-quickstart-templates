@@ -41,7 +41,14 @@ function throw_if_empty() {
 function run_util_script() {
   local script_path="$1"
   shift
-  curl --silent "${artifacts_location}${script_path}${artifacts_location_sas_token}" | sudo bash -s -- "$@"
+  # FIX: ใช้ไฟล์ที่ CustomScript download ไว้แล้วใน working dir ก่อน
+  local script_name
+  script_name="$(basename "$script_path")"
+  if [[ -f "$script_name" ]]; then
+    sudo bash "$script_name" "$@"
+  else
+    curl --silent "${artifacts_location}${script_path}${artifacts_location_sas_token}" | sudo bash -s -- "$@"
+  fi
   local return_value=$?
   if [ $return_value -ne 0 ]; then
     >&2 echo "Failed while executing script '$script_path'."
@@ -201,9 +208,18 @@ fi
 # FIX: รอ Jenkins พร้อมก่อนเริ่มทำงาน
 wait_for_jenkins
 
-#download dependencies
-job_xml=$(curl -s "${artifacts_location}scripts/jenkins/basic-docker-build-job.xml${artifacts_location_sas_token}")
-credentials_xml=$(curl -s "${artifacts_location}scripts/jenkins/basic-user-pwd-credentials.xml${artifacts_location_sas_token}")
+# FIX: อ่าน XML จาก local file ที่ CustomScript download ไว้แล้ว (ถ้าไม่มี fallback ไปดึง URL)
+if [[ -f "basic-docker-build-job.xml" ]]; then
+  job_xml=$(cat "basic-docker-build-job.xml")
+else
+  job_xml=$(curl -s "${artifacts_location}scripts/jenkins/basic-docker-build-job.xml${artifacts_location_sas_token}")
+fi
+
+if [[ -f "basic-user-pwd-credentials.xml" ]]; then
+  credentials_xml=$(cat "basic-user-pwd-credentials.xml")
+else
+  credentials_xml=$(curl -s "${artifacts_location}scripts/jenkins/basic-user-pwd-credentials.xml${artifacts_location_sas_token}")
+fi
 
 #escape xml reserved characters
 escapsed_credentials_id=$(xmlstarlet esc "$credentials_id")
@@ -258,7 +274,12 @@ EOF
   job_xml=${job_xml//'<triggers/>'/${triggers_xml_node}}
 fi
 
-job_xml=${job_xml//'{insert-groovy-script}'/"$(curl -s "${artifacts_location}scripts/jenkins/basic-docker-build.groovy${artifacts_location_sas_token}")"}
+if [[ -f "basic-docker-build.groovy" ]]; then
+  groovy_content=$(cat "basic-docker-build.groovy")
+else
+  groovy_content=$(curl -s "${artifacts_location}scripts/jenkins/basic-docker-build.groovy${artifacts_location_sas_token}")
+fi
+job_xml=${job_xml//'{insert-groovy-script}'/${groovy_content}}
 echo "${job_xml}" > job.xml
 
 # FIX: ติดตั้ง credentials plugin ก่อน (ไม่ใช้ -deploy ที่ deprecated แล้ว)

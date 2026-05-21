@@ -209,7 +209,13 @@
             "autoUpgradeMinorVersion": true,
             "settings": {
               "fileUris": [
-                "[concat(parameters('_artifactsLocation'), 'scripts/jenkins/jenkins-acr-aks.sh', parameters('_artifactsLocationSasToken'))]"
+                "[concat(parameters('_artifactsLocation'), 'scripts/jenkins/jenkins-acr-aks.sh', parameters('_artifactsLocationSasToken'))]",
+                "[concat(parameters('_artifactsLocation'), 'scripts/jenkins/install_jenkins.sh', parameters('_artifactsLocationSasToken'))]",
+                "[concat(parameters('_artifactsLocation'), 'scripts/jenkins/add-docker-build-job.sh', parameters('_artifactsLocationSasToken'))]",
+                "[concat(parameters('_artifactsLocation'), 'scripts/jenkins/run-cli-command.sh', parameters('_artifactsLocationSasToken'))]",
+                "[concat(parameters('_artifactsLocation'), 'scripts/jenkins/basic-docker-build-job.xml', parameters('_artifactsLocationSasToken'))]",
+                "[concat(parameters('_artifactsLocation'), 'scripts/jenkins/basic-user-pwd-credentials.xml', parameters('_artifactsLocationSasToken'))]",
+                "[concat(parameters('_artifactsLocation'), 'scripts/jenkins/basic-docker-build.groovy', parameters('_artifactsLocationSasToken'))]"
               ]
             },
             "protectedSettings": {
