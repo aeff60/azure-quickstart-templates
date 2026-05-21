@@ -49,6 +49,23 @@ function run_util_script() {
   fi
 }
 
+# FIX: รอให้ Jenkins พร้อมก่อนทำ CLI command
+function wait_for_jenkins() {
+  local url="${jenkins_url}login"
+  echo "Waiting for Jenkins at ${url}..."
+  local retries=0
+  until curl --silent --fail --output /dev/null "${url}"; do
+    retries=$((retries + 1))
+    if [ $retries -ge 30 ]; then
+      echo "Jenkins did not become available after 150s. Aborting." >&2
+      exit 1
+    fi
+    echo "Jenkins not ready yet, waiting 5s... (${retries}/30)"
+    sleep 5
+  done
+  echo "Jenkins is ready."
+}
+
 #set defaults
 credentials_id="docker_credentials"
 credentials_desc="Docker Container Registry Credentials"
@@ -156,9 +173,6 @@ done
 
 throw_if_empty --jenkins_url $jenkins_url
 throw_if_empty --jenkins_username $jenkins_username
-if [ "$jenkins_username" != "admin" ]; then
-  throw_if_empty --jenkins_password $jenkins_password
-fi
 throw_if_empty --git_url $git_url
 throw_if_empty --registry $registry
 throw_if_empty --registry_user_name $registry_user_name
@@ -167,9 +181,29 @@ throw_if_empty --aks_resource_group_name $aks_resource_group_name
 throw_if_empty --aks_cluster_name $aks_cluster_name
 throw_if_empty --mongodb_uri $mongodb_uri
 
+# FIX: ถ้าเป็น admin และไม่ได้ระบุ password → ใช้ initialAdminPassword อัตโนมัติ
+if [ -z "$jenkins_password" ]; then
+  if [ "$jenkins_username" == "admin" ]; then
+    jenkins_password=$(sudo cat /var/lib/jenkins/secrets/initialAdminPassword)
+    echo "Using initialAdminPassword for admin user."
+  else
+    echo "Parameter '--jenkins_password' cannot be empty." >&2
+    exit 1
+  fi
+fi
+
+# FIX: ติดตั้ง xmlstarlet ก่อนใช้งาน (script เดิมไม่ได้ติดตั้ง)
+if ! command -v xmlstarlet &>/dev/null; then
+  echo "Installing xmlstarlet..."
+  sudo apt-get install -y xmlstarlet
+fi
+
+# FIX: รอ Jenkins พร้อมก่อนเริ่มทำงาน
+wait_for_jenkins
+
 #download dependencies
-job_xml=$(curl -s ${artifacts_location}scripts/jenkins/basic-docker-build-job.xml${artifacts_location_sas_token})
-credentials_xml=$(curl -s ${artifacts_location}scripts/jenkins/basic-user-pwd-credentials.xml${artifacts_location_sas_token})
+job_xml=$(curl -s "${artifacts_location}scripts/jenkins/basic-docker-build-job.xml${artifacts_location_sas_token}")
+credentials_xml=$(curl -s "${artifacts_location}scripts/jenkins/basic-user-pwd-credentials.xml${artifacts_location_sas_token}")
 
 #escape xml reserved characters
 escapsed_credentials_id=$(xmlstarlet esc "$credentials_id")
@@ -224,28 +258,50 @@ EOF
   job_xml=${job_xml//'<triggers/>'/${triggers_xml_node}}
 fi
 
-job_xml=${job_xml//'{insert-groovy-script}'/"$(curl -s ${artifacts_location}scripts/jenkins/basic-docker-build.groovy${artifacts_location_sas_token})"}
+job_xml=${job_xml//'{insert-groovy-script}'/"$(curl -s "${artifacts_location}scripts/jenkins/basic-docker-build.groovy${artifacts_location_sas_token}")"}
 echo "${job_xml}" > job.xml
 
-#install the required plugins
-run_util_script "scripts/jenkins/run-cli-command.sh" -j "$jenkins_url" -ju "$jenkins_username" -jp "$jenkins_password" -c "install-plugin credentials -deploy"
+# FIX: ติดตั้ง credentials plugin ก่อน (ไม่ใช้ -deploy ที่ deprecated แล้ว)
+run_util_script "scripts/jenkins/run-cli-command.sh" \
+  -j "$jenkins_url" -ju "$jenkins_username" -jp "$jenkins_password" \
+  -c "install-plugin credentials"
+
+# FIX: ติดตั้ง plugins ทีละตัวพร้อม -restart แล้วรอ Jenkins กลับมาทุกครั้ง
 plugins=(docker-workflow git)
 for plugin in "${plugins[@]}"; do
-  run_util_script "scripts/jenkins/run-cli-command.sh" -j "$jenkins_url" -ju "$jenkins_username" -jp "$jenkins_password" -c "install-plugin $plugin -restart"
+  echo "Installing plugin: ${plugin}..."
+  run_util_script "scripts/jenkins/run-cli-command.sh" \
+    -j "$jenkins_url" -ju "$jenkins_username" -jp "$jenkins_password" \
+    -c "install-plugin ${plugin} -restart"
+
+  # FIX: รอ Jenkins restart เสร็จหลังติดตั้ง plugin
+  echo "Waiting for Jenkins to restart after installing ${plugin}..."
+  sleep 20
+  wait_for_jenkins
 done
 
-#wait for instance to be back online
-run_util_script "scripts/jenkins/run-cli-command.sh" -j "$jenkins_url" -ju "$jenkins_username" -jp "$jenkins_password" -c "version"
+# ยืนยัน Jenkins พร้อม
+run_util_script "scripts/jenkins/run-cli-command.sh" \
+  -j "$jenkins_url" -ju "$jenkins_username" -jp "$jenkins_password" \
+  -c "version"
 
 echo "${credentials_xml}" > credentials.xml
 
-#add user/pwd
-run_util_script "scripts/jenkins/run-cli-command.sh" -j "$jenkins_url" -ju "$jenkins_username" -jp "$jenkins_password" -c 'create-credentials-by-xml SystemCredentialsProvider::SystemContextResolver::jenkins (global)' -cif "credentials.xml"
+#add user/pwd credentials
+run_util_script "scripts/jenkins/run-cli-command.sh" \
+  -j "$jenkins_url" -ju "$jenkins_username" -jp "$jenkins_password" \
+  -c 'create-credentials-by-xml SystemCredentialsProvider::SystemContextResolver::jenkins (global)' \
+  -cif "credentials.xml"
 
 #add job
-run_util_script "scripts/jenkins/run-cli-command.sh" -j "$jenkins_url" -ju "$jenkins_username" -jp "$jenkins_password" -c "create-job ${job_short_name}" -cif "job.xml"
+run_util_script "scripts/jenkins/run-cli-command.sh" \
+  -j "$jenkins_url" -ju "$jenkins_username" -jp "$jenkins_password" \
+  -c "create-job ${job_short_name}" \
+  -cif "job.xml"
 
 #cleanup
-rm credentials.xml
-rm job.xml
-rm jenkins-cli.jar
+rm -f credentials.xml
+rm -f job.xml
+rm -f jenkins-cli.jar
+
+echo "Pipeline job '${job_short_name}' created successfully."
