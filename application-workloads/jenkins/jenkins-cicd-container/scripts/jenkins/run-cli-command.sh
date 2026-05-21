@@ -1,5 +1,4 @@
 #!/bin/bash
-
 function print_usage() {
   cat <<EOF
 Command
@@ -99,17 +98,28 @@ function retry_until_successful_with_input {
 
 if [ ! -e jenkins-cli.jar ]; then
   >&2 echo "Downloading Jenkins CLI..."
-  retry_until_successful wget ${jenkins_url}jnlpJars/jenkins-cli.jar -O jenkins-cli.jar
+  retry_until_successful wget "${jenkins_url}jnlpJars/jenkins-cli.jar" -O jenkins-cli.jar
 fi
 
 if [ -z "$jenkins_password" ]; then
-  # NOTE: Intentionally setting this after the first retry_until_successful to ensure the initialAdminPassword file exists
-  jenkins_password=`sudo cat /var/lib/jenkins/secrets/initialAdminPassword`
+  jenkins_password=$(sudo cat /var/lib/jenkins/secrets/initialAdminPassword)
 fi
 
 >&2 echo "Running \"${command}\"..."
+
+# FIX: เพิ่ม -webSocket เพื่อแก้ปัญหา "Unexpected request origin" 403
+# Jenkins CLI ตั้งแต่ version 2.54+ ต้องใช้ WebSocket transport
+# ไม่งั้น CLI handshake จะล้มเหลวเสมอเมื่ออยู่หลัง reverse proxy (nginx)
 if [ -z "${command_input_file}" ]; then
-  retry_until_successful java -jar jenkins-cli.jar -s "${jenkins_url}" -auth "${jenkins_username}":"${jenkins_password}" $command
+  retry_until_successful java -jar jenkins-cli.jar \
+    -s "${jenkins_url}" \
+    -webSocket \
+    -auth "${jenkins_username}":"${jenkins_password}" \
+    $command
 else
-  retry_until_successful_with_input "${command_input_file}" java -jar jenkins-cli.jar -s "${jenkins_url}" -auth "${jenkins_username}":"${jenkins_password}" $command
+  retry_until_successful_with_input "${command_input_file}" java -jar jenkins-cli.jar \
+    -s "${jenkins_url}" \
+    -webSocket \
+    -auth "${jenkins_username}":"${jenkins_password}" \
+    $command
 fi
