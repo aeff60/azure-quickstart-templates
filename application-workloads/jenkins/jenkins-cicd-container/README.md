@@ -1,5 +1,5 @@
 ---
-description: Containers make it very easy for you to continuously build and deploy your applications. By orchestrating deployment of those containers using Kubernetes in Azure Container Service, you can achieve replicable, manageable clusters of containers. By setting up a continuous build to produce your container images and orchestration, you can increase the speed and reliability of your deployment.
+description: ระบบ CI/CD ด้วย Jenkins บน Azure Container Service (AKS) สำหรับ build และ deploy Docker container อัตโนมัติ
 page_type: sample
 products:
 - azure
@@ -8,302 +8,194 @@ urlFragment: jenkins-cicd-container
 languages:
 - json
 ---
-# CI/CD using Jenkins on Azure Container Service (AKS)
+# CI/CD ด้วย Jenkins บน Azure Container Service (AKS)
 
-![Azure Public Test Date](https://azurequickstartsservice.blob.core.windows.net/badges/application-workloads/jenkins/jenkins-cicd-container/PublicLastTestDate.svg)
-![Azure Public Test Result](https://azurequickstartsservice.blob.core.windows.net/badges/application-workloads/jenkins/jenkins-cicd-container/PublicDeployment.svg)
+## ภาพรวมสถาปัตยกรรม
 
-![Azure US Gov Last Test Date](https://azurequickstartsservice.blob.core.windows.net/badges/application-workloads/jenkins/jenkins-cicd-container/FairfaxLastTestDate.svg)
-![Azure US Gov Last Test Result](https://azurequickstartsservice.blob.core.windows.net/badges/application-workloads/jenkins/jenkins-cicd-container/FairfaxDeployment.svg)
-
-![Best Practice Check](https://azurequickstartsservice.blob.core.windows.net/badges/application-workloads/jenkins/jenkins-cicd-container/BestPracticeResult.svg)
-![Cred Scan Check](https://azurequickstartsservice.blob.core.windows.net/badges/application-workloads/jenkins/jenkins-cicd-container/CredScanResult.svg)
-
-## Architecture overview
-
-Containers make it very easy for you to continuously build and deploy your applications. By orchestrating deployment of those containers using Kubernetes in Azure Container Service, you can achieve replicable, manageable clusters of containers.
-
-By setting up a continuous build to produce your container images and orchestration, you can increase the speed and reliability of your deployment.
+ระบบนี้ใช้ Jenkins เป็นตัว build และ deploy แอปพลิเคชันแบบ container โดยอัตโนมัติ ทำงานร่วมกับ Kubernetes (AKS) เพื่อจัดการ container และ Grafana สำหรับแสดงผล metrics
 
 ![](images/architecture.png)
 
-1. Change application source code.
-2. Commit code to GitHub.
-3. Continuous Integration Trigger to Jenkins.
-4. Jenkins triggers a build job using Azure Container Service (AKS) for a dynamic build agent.
-5. Jenkins builds and pushes Docker container Azure Container Registry.
-6. Jenkins deploys new containerized app to Kubernetes on Azure Container Service (AKS) backed by Azure Cosmos DB.
-7. Grafana displays visualization of infrastructure and application metrics via Azure Monitor.
-8. Monitor application and make improvements.
+1. แก้ไข source code ของแอปพลิเคชัน
+2. Commit code ขึ้น GitHub
+3. GitHub ส่ง trigger ไปยัง Jenkins
+4. Jenkins สั่ง build โดยใช้ AKS เป็น build agent
+5. Jenkins build Docker image แล้วอัปโหลดขึ้น Azure Container Registry (ACR)
+6. Jenkins deploy container ใหม่ไปยัง Kubernetes (AKS) ที่ใช้ CosmosDB เป็น database
+7. Grafana แสดงกราฟ metrics ผ่าน Azure Monitor
+8. ตรวจสอบและปรับปรุงระบบ
 
-## Deploy to Azure
+---
 
-### Create an Azure service principal
+## ขั้นตอนการ Deploy
 
-1. Install [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli?view=azure-cli-latest) if you have not.
+### 1. สร้าง Azure Service Principal
 
-   > Note: Alternatively, you can also use Azure Cloud Shell from the Azure Portal.
+Service Principal คือ account ที่ให้ template สร้าง resource ต่างๆ ใน Azure ได้
 
-2. Open terminal, then execute:
+1. ติดตั้ง [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli) หรือใช้ **Azure Cloud Shell** จาก Azure Portal ได้เลย
+
+2. Login:
 
    ```sh
    az login
    ```
 
-   Follow the guide to sign in.
-
-   > Note: If you use Azure Cloud Shell from the Azure Portal, you are automatically authenticated. Therefore there is no need to ``az login`` again.
-
-3. Execute the command below to create service principal, with the role ``Contributor`` and under the current subscription by default.
+3. สร้าง Service Principal:
 
    ```sh
-   az ad sp create-for-rbac --name <AppName> --role Contributor
+   az ad sp create-for-rbac --name <ชื่อที่ต้องการ> --role Contributor
    ```
 
-   > Note: please replate the \<AppName> placeholder.
-
-4. You will get a response like below.
+4. จะได้ผลลัพธ์แบบนี้ — เก็บค่า **appId** และ **password** ไว้:
 
    ```json
    {
       "appId": "8e897eb4-069d-40c2-9563-000000003c14",
-      "displayName": "<AppName>",
+      "displayName": "<ชื่อที่ตั้ง>",
       "password": "xxxxxvJgeKZoRAfxxxx0SitnANH8Kxxxx",
       "tenant": "000088bf-0000-0000-0000-2d7cd0100000"
    }
    ```
 
-   Copy the values **appId** and **password**, they will be used later.
+### 2. สร้าง SSH Key สำหรับ VM
 
-   > Note: for more details about creating an Azure service principal, please refer to [Create an Azure service principal with Azure CLI 2.0](https://docs.microsoft.com/cli/azure/create-an-azure-service-principal-azure-cli?view=azure-cli-latest)
+1. เปิด [Azure Portal](https://portal.azure.com/) แล้วค้นหา **SSH keys**
 
-### Create a SSH Key for Linux VMs
+2. กด **Create** แล้วกรอก:
+   - เลือก/สร้าง Resource group
+   - เลือก Region
+   - ตั้งชื่อ Key pair
+   - SSH public key source → **Generate public key pair**
 
-1. Navigate to [Azure Portal](https://portal.azure.com/).
+3. กด **Review + create** → **Create**
 
-2. At the top of the page, type SSH to search. Under **Services**, select SSH keys.
-
-3. On the **SSH Key** page, select **Create**.
+4. เมื่อ popup ขึ้น กด **Download private key and create resource** เพื่อดาวน์โหลดไฟล์ `.pem`
 
    ![](images/portal-sshkey.png)
+   ![](images/download-key.png)
 
-4. In **Resource group** select **Create new** to create a new resource group to store your keys. Type a name for your resource group and select **OK**.
+5. เก็บไฟล์ `.pem` ไว้ในที่จำได้
 
-5. In **Region** select a region to store your keys. You can use the keys in any region, this is just the region where they will be stored.
+### 3. Deploy ด้วย Azure Portal
 
-6. Type a name for your key in **Key pair name**.
-
-7. In **SSH public key source**, select **Generate public key pair**.
-
-8. When you are done, select **Review + create**.
-
-9. After it passes validation, select Create.
-
-10. You will then get a pop-up window to, select **Download private key and create resource**. This will download the SSH key as a .pem file.
-
-      ![](images/download-key.png)
-
-11. Once the .pem file is downloaded, you might want to move it somewhere on your computer where it is easy to point to from your SSH client.
-
-### Deploy
-
-1. Click **Deploy to Azure** to start the deployment.
+1. กดปุ่มด้านล่างเพื่อเริ่ม deploy:
 
    [![Deploy To Azure](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/deploytoazure.svg?sanitize=true)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FAzure%2Fazure-quickstart-templates%2Fmaster%2Fapplication-workloads%2Fjenkins%2Fjenkins-cicd-container%2Fazuredeploy.json)
 
-   [![Deploy To Azure US Gov](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/deploytoazuregov.svg?sanitize=true)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FAzure%2Fazure-quickstart-templates%2Fmaster%2Fapplication-workloads%2Fjenkins%2Fjenkins-cicd-container%2Fazuredeploy.json)
+2. กรอกข้อมูลในฟอร์ม:
+   - เลือก Subscription และสร้าง Resource group ใหม่
+   - กรอกค่าต่างๆ พร้อมเลือก SSH Key ที่สร้างในขั้นตอนที่ 2
+   - ติ๊ก **I agree to the terms and conditions**
 
-   [![Visualize](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/visualizebutton.svg?sanitize=true)](http://armviz.io/#/?load=https%3A%2F%2Fraw.githubusercontent.com%2FAzure%2Fazure-quickstart-templates%2Fmaster%2Fapplication-workloads%2Fjenkins%2Fjenkins-cicd-container%2Fazuredeploy.json)
+   > **หมายเหตุ:**
+   > - ชื่อ CosmosDB ควรมี suffix เพื่อป้องกัน conflict เช่น `cosmos-20260522`
+   > - ชื่อ ACR ใช้ได้เฉพาะตัวอักษรและตัวเลขเท่านั้น เช่น `acr20260522`
 
-2. Fill the form:
+3. กด **Purchase** รอประมาณ 13 นาที
 
-   * Choose a subscription.
+### 4. ดู Output หลัง Deploy เสร็จ
 
-   * Use a new resource group and choose a location.
-
-   * Input the settings.
-
-     > Note:
-     >
-     > * The names and DNS prefixes should be unique. To avoid naming conflicting, we strongly recommend you to add some suffix. For example, the Cosmos Db name could be **cosmos-180130-1512**.
-     > * ACR (Azure Container Registry) names may contain alpha numeric characters only. A valid name is **acr1801301512**.
-     > * Plesae select the **SSH Key** created in last step, rather than generate a new one.
-
-   * Check **I agree to the terms and conditions stated above**.
-
-3. Click **Purchase**.
-
-   > Note: It will take about 13 minutes to finish the deployment.
-
-### Deployment output
-
-After the deployment finishes, you will get some important information from the outputs section.
+เปิด **Deployments** → **Microsoft.Template** → **Outputs** ใน Resource group
 
 ![](images/azure-deployment-output.png)
+![](images/azure-resource-group-deployments.png)
 
->Note: the deployment window above could be re-open in the **Deployments** tab of the resource group.
->
->![](images/azure-resource-group-deployments.png)
->
->Click the first one **Microsoft.Template**.
+---
 
-## Access Deployed Resources
+## การเข้าใช้งานระบบ
 
-### Access Jenkins
+### เข้า Jenkins
 
-This Jenkins instance does not support https, so logging in through a public IP address has been disabled (it would expose your password and other information to eavesdropping). To securely login, you need to connect to the Jenkins instance using SSH port forwarding.
+Jenkins ไม่รองรับ HTTPS บน public IP โดยตรง — ต้องใช้ SSH tunnel แทน
 
-#### Connect to the Jenkins instance using SSH port forwarding
+#### เชื่อมต่อผ่าน SSH Tunnel
 
-1. Find out the SSH Key pem file path and replace the `<keyfile>` of below command.
-
-2. Open terminal, then paste and execute it.
-
-   ```Sh
-   $ ssh -i <keyfile> -L 8080:localhost:8080 azureuser@jenkins-180131-1520.eastus.cloudapp.azure.com
-   ECDSA key fingerprint is SHA256:ky3f+1oqa/nHzzLWZGf5TqiyZbJahoztoODcbobBGS8.
-   Are you sure you want to continue connecting (yes/no/[fingerprint])?
-   ```
-
-3. Input **yes** and press **Enter** key to accept and add the ECDSA to the list of known hosts.
+1. เปิด terminal แล้วรัน (แทนที่ `<keyfile>` ด้วย path ของไฟล์ `.pem` และ `<jenkins-fqdn>` ด้วย FQDN จาก output):
 
    ```sh
-   Warning: Permanently added 'jenkins-180131-1520.eastus.cloudapp.azure.com,40.71.20.174' (ECDSA) to the list of known hosts.
-   azureuser@jenkins-180131-1520.eastus.cloudapp.azure.com's password:
+   ssh -i <keyfile> -L 8080:localhost:8080 azureuser@<jenkins-fqdn>
    ```
 
-4. Input the **Linux Admin Password**
+2. เมื่อถาม fingerprint พิมพ์ `yes` แล้ว Enter
 
-   If your pass work is correct, you will get the welcome message:
+3. กรอก **Linux Admin Password** ที่ตั้งไว้ตอน deploy
 
-   ```Sh
-   Welcome to Ubuntu 18.04.6 LTS (GNU/Linux 5.4.0-1067-azure x86_64)
-   ...
-   ```
+4. **เปิดหน้าต่าง terminal นี้ทิ้งไว้ตลอด**
 
-   Keep the terminal open.
+#### ดึง Jenkins Admin Password (ครั้งแรก)
 
-#### Get the Jenkins admin password
+รันใน terminal SSH:
 
-1. Execute the command in the terminal:
+```sh
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+```
 
-   ```Sh
-   sudo cat /var/lib/jenkins/secrets/initialAdminPassword
-   ```
+จะได้รหัสผ่าน เช่น: `77a6d3183ad24f9ca7df6181c81400d0`
 
-2. You will get the Jenkins admin password which looks like below:
+ทำตาม wizard **Getting Started** ของ Jenkins แล้วติดตั้ง recommended plugins
 
-   ```Sh
-   77a6d3183ad24f9ca7df6181c81400d0
-   ```
+#### Login Jenkins
 
-3. Follow the Jenkins **Getting Started** wizard to finalise the setup. You just need to install default recommended plugins.
-
-#### Log into Jenkins
-
-1. Open http://localhost:8080 in a browser.
-
-2. Click **log in** at the top-right.
-
-3. Input the user and password:
-
-   * User: admin
-   * Password: *use the password you get in previous step*
-
-   Click **log in**.
-
-#### Check the sample pipeline job
-
-After logged in, you will see the **Hello World Build & Deploy** pipline job. Please click to explore it.
+1. เปิด http://localhost:8080 ในเบราว์เซอร์
+2. กด **log in** → User: `admin` / Password ที่ได้มา
+3. จะเห็น pipeline job **Hello World Build & Deploy**
 
 ![](images/jenkins-pipline-job.png)
 
-### Access the hello world web app
+---
 
-#### Sign into Azure and get AKS credentials
+### เข้าใช้แอป Hello World
 
-1. Open terminal, execute:
+#### ดึง Credentials ของ AKS
+
+```sh
+az login
+az aks get-credentials --resource-group <ResourceGroup> --name <KubernetesClusterName>
+```
+
+#### ดู External IP ของ service
+
+ติดตั้ง kubectl ถ้ายังไม่มี: `az aks install-cli`
+
+```sh
+kubectl get service
+```
+
+ผลลัพธ์:
+
+```
+NAME                  TYPE           CLUSTER-IP   EXTERNAL-IP      PORT(S)
+hello-world-service   LoadBalancer   10.0.98.99   52.168.126.156   80:32611/TCP
+```
+
+เปิด **EXTERNAL-IP** ในเบราว์เซอร์ จะเห็น:
+
+```
+Hello World!
+There are 0 request records.
+```
+
+รีเฟรชหน้า จำนวน records จะเพิ่มขึ้น
+
+---
+
+### เข้าใช้ Grafana
+
+1. คัดลอก **GRAFANAURL** จาก output ของ deployment
+2. เปิดในเบราว์เซอร์ → login ด้วย User: `admin` / Password: Linux Admin Password
+3. กด **Home** → **Hello World Overview**
+
+![](images/grafana-01.png)
+![](images/grafana-02.png)
+![](images/grafana-03.png)
+
+4. SSH เข้า Grafana ได้ด้วย:
 
    ```sh
-   az login
+   ssh -i <private_ssh_key> <username>@<GRAFANAURL>
    ```
 
-   Follow the guide to sign in.
-
-2. Execute the command below to get Kubenetes cluster credentials.
-
-   ```sh
-   aks get-credentials --resource-group <ResourceGroup> --name <KubenetesClusterName>
-   ```
-
-   > Note: please replace \<ResourceGroup> and \<KubenetesClusterName> before executing it.
-
-   When done, you will get a prompt:
-
-   ```Sh
-   Merged "kube-180131-1520" as current context in /Users/<User>/.kube/config
-   ```
-
-#### Get Kubenetes service
-
-1. Install [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/) if you have not. Or, you can install `kubectl` locally using the [az aks install-cli](https://docs.microsoft.com/cli/azure/aks#az-aks-install-cli) command:
-
-   ```sh
-   az aks install-cli
-   ```
-
-2. Execute the command below:
-
-   ```Sh
-   kubectl get service
-   ```
-
-3. You will get the response like below:
-
-   ```Sh
-   NAME                  TYPE           CLUSTER-IP   EXTERNAL-IP      PORT(S)        AGE
-   hello-world-service   LoadBalancer   10.0.98.99   52.168.126.156   80:32611/TCP   1h
-   kubernetes            ClusterIP      10.0.0.1     <none>           443/TCP        1h
-   ```
-
-4. Copy the **external ip** of the **hello-world-service**.
-
-#### Access the hello world web app
-
-1. Open the **external ip** in a browser. You will see the response:
-
-   ```html
-   Hello World!
-   There are 0 request records.
-   ```
-
-2. Refresh the page, the number of request records will increase.
-
-### Access the Grafana instance
-
-1. Copy the GRAFANAURL value from the Outputs section of the deployment.
-
-2. Open it in a browser, then log in:
-
-   * User: admin
-   * Password: *use the Linux Admin Password*
-
-3. Click **Home**.
-
-   ![](images/grafana-01.png)
-
-   Then click **Hello World Overview**:
-
-   ![](images/grafana-02.png)
-
-4. You will see the graphs:
-
-   ![](images/grafana-03.png)
-
-5. If you want to SSH to Grafana host machine, you can open terminal, then paste and execute a command like below.
-
-   ```Sh
-   ssh -i <private_ssh_key>  <username>@<GRAFANAURL>
-   ```
+---
 
 `Tags: Microsoft.ContainerRegistry/registries, Microsoft.DocumentDb/databaseAccounts, Microsoft.Network/virtualNetworks, Microsoft.Resources/deployments, Microsoft.ContainerService/managedClusters, Microsoft.Network/publicIPAddresses, Microsoft.Network/networkSecurityGroups, Microsoft.Network/networkInterfaces, Microsoft.Compute/virtualMachines, extensions, CustomScript`
