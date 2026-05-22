@@ -198,4 +198,44 @@ There are 0 request records.
 
 ---
 
+## โครงสร้างไฟล์ในโปรเจค
+
+```
+jenkins-cicd-container/
+├── azuredeploy.json              # ARM template หลัก — สร้าง infrastructure ทั้งหมด
+├── azuredeploy.parameters.json   # ค่า parameters สำหรับ ARM template
+├── metadata.json                 # metadata ของ Azure quickstart template
+├── Dockerfile                    # สร้าง Docker image สำหรับแอป Hello World
+├── server.js                     # แอป Node.js ที่จะ deploy ขึ้น AKS
+├── package.json                  # dependencies ของ Node.js app
+├── .gitignore                    # ไฟล์ที่ git ไม่ track (node_modules)
+│
+├── nested/                       # ARM nested templates (ดู nested/README.md)
+│   ├── jenkins.json              # สร้าง Jenkins VM
+│   └── grafana.json              # สร้าง Grafana VM
+│
+├── kubernetes/                   # Kubernetes manifests (ดู kubernetes/README.md)
+│   ├── hello-world-deployment.yaml
+│   └── hello-world-service.yaml
+│
+├── scripts/
+│   ├── jenkins/                  # scripts สำหรับ Jenkins (ดู scripts/jenkins/README.md)
+│   └── grafana/                  # scripts สำหรับ Grafana (ดู scripts/grafana/README.md)
+│
+└── images/                       # รูปภาพสำหรับ README
+```
+
+### ไฟล์ที่ root
+
+| ไฟล์ | หน้าที่ |
+|---|---|
+| `azuredeploy.json` | ARM template หลัก — สั่ง deploy ทุก resource (ACR, CosmosDB, VNet, Jenkins VM, AKS, Grafana VM) ในครั้งเดียว |
+| `azuredeploy.parameters.json` | ไฟล์กำหนดค่า input สำหรับ ARM template เช่น service principal, admin password, DNS name |
+| `metadata.json` | ข้อมูล metadata ของ template สำหรับ Azure Quickstart Gallery |
+| `Dockerfile` | สร้าง Docker image จาก Node 16 + ติดตั้ง dependencies + รัน server.js บน port 80 |
+| `server.js` | แอป Node.js ที่รับ HTTP request, บันทึกลง MongoDB (CosmosDB), และตอบกลับด้วยจำนวน records |
+| `package.json` | กำหนด dependencies ของ Node app — ใช้ `mongodb` driver v4.3.1 |
+
+---
+
 `Tags: Microsoft.ContainerRegistry/registries, Microsoft.DocumentDb/databaseAccounts, Microsoft.Network/virtualNetworks, Microsoft.Resources/deployments, Microsoft.ContainerService/managedClusters, Microsoft.Network/publicIPAddresses, Microsoft.Network/networkSecurityGroups, Microsoft.Network/networkInterfaces, Microsoft.Compute/virtualMachines, extensions, CustomScript`
